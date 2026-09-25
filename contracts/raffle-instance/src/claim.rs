@@ -32,7 +32,7 @@ pub(crate) fn claim_prize(env: Env, winner: Address, tier_index: u32) -> Result<
         / 10000;
     
     let net_amount = amount.checked_sub(protocol_fee).ok_or(Error::ArithmeticOverflow)?;
-    let token_client = token::Client::new(&env, &raffle.payment_token);
+    let token_client = token::Client::new(&env, &raffle.prize_token);
     let balance = token_client.balance(&env.current_contract_address());
     if balance < amount {
         return Err(Error::InsufficientFunds);
@@ -85,7 +85,7 @@ pub(crate) fn sweep_unclaimed(env: Env) -> Result<u32, Error> {
     if now < fa + raffle.claim_expiry_seconds { return Err(Error::ClaimTooEarly); }
 
     let treasury = raffle.treasury_address.clone().ok_or(Error::NotAuthorized)?;
-    let tc = token::Client::new(&env, &raffle.payment_token);
+    let tc = token::Client::new(&env, &raffle.prize_token);
     let mut swept: u32 = 0;
 
     let len = raffle.winners.len();
@@ -118,9 +118,9 @@ pub(crate) fn refund_prize(env: Env) -> Result<(), Error> {
     raffle.prize_deposited = false;
     write_raffle(&env, &raffle);
 
-    let token_client = token::Client::new(&env, &raffle.payment_token);
+    let token_client = token::Client::new(&env, &raffle.prize_token);
     token_client.try_transfer(&env.current_contract_address(), &raffle.creator, &raffle.prize_amount).map_err(|_| Error::TokenTransferFailed)?;
-    PrizeRefunded { creator: raffle.creator.clone(), amount: raffle.prize_amount, token: raffle.payment_token.clone(), timestamp: env.ledger().timestamp() }.publish(&env);
+    PrizeRefunded { creator: raffle.creator.clone(), amount: raffle.prize_amount, token: raffle.prize_token.clone(), timestamp: env.ledger().timestamp() }.publish(&env);
     Ok(())
 }
 

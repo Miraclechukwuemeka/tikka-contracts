@@ -2983,3 +2983,123 @@ fn test_unset_lockup_gets_default() {
     assert_eq!(raffle.claim_lockup_seconds, DEFAULT_CLAIM_LOCKUP_SECONDS);
     assert_eq!(raffle.swap_deadline_seconds, DEFAULT_SWAP_DEADLINE_SECONDS);
 }
+
+// ===========================================================================
+// End-to-end: prize_token != payment_token (#754)
+//
+// Verifies that when the raffle is configured with a dedicated prize_token,
+// the prize is escrowed, drawn, and paid out using prize_token — never
+// payment_token.  The solvency guard in claim_prize must read the balance of
+// the same token it transfers.
+// ===========================================================================
+#[test]
+fn claim_prize_pays_out_prize_token_not_payment_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let factory = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+
+    // Distinct payment and prize token contracts.
+    let payment_token_admin = Address::generate(&env);
+    let (payment_token, payment_mint) = create_token(&env, &payment_token_admin);
+    payment_mint.mint(&creator, &1_000_000);
+    payment_mint.mint(&buyer, &1_000_000);
+
+    let prize_token_admin = Address::generate(&env);
+    let (prize_token, prize_mint) = create_token(&env, &prize_token_admin);
+    prize_mint.mint(&creator, &1_000_000);
+
+    assert_ne!(payment_token, prize_token);
+
+    let contract_id = env.register(Contract, ());
+    let client = ContractClient::new(&env, &contract_id);
+
+    let prize_amount = MIN_TICKET_PRICE * 10;
+
+    let config = RaffleConfig {
+        description: String::from_str(&env, "Prize token override"),
+        end_time: 0,
+        no_deadline: true,
+        max_tickets: 1,
+        max_tickets_per_tx: 1,
+        min_tickets: 1,
+        allow_multiple: true,
+        ticket_price: MIN_TICKET_PRICE,
+        payment_token: payment_token.clone(),
+        prize_amount,
+        prizes: soroban_sdk::vec![&env, 10000u32],
+        randomness_source: RandomnessSource::Internal,
+        oracle_address: None,
+        protocol_fee_bp: 0,
+        treasury_address: None,
+        swap_router: None,
+        tikka_token: None,
+        unique_winners: false,
+        metadata_hash: BytesN::from_array(&env, &[42u8; 32]),
+        claim_lockup_seconds: Some(0),
+        swap_deadline_seconds: Some(0),
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+        category: None,
+        bundles: soroban_sdk::Vec::new(&env),
+        prize_token: Some(prize_token.clone()),
+        nft_contract: None,
+    };
+
+    client.init(&factory, &admin, &creator, &config);
+
+    let raffle = client.get_raffle();
+    assert_eq!(raffle.prize_token, prize_token);
+    assert_eq!(raffle.payment_token, payment_token);
+
+    // Remove factory so buy_tickets skips the factory cross-contract calls.
+    env.as_contract(&contract_id, || {
+        env.storage().instance().remove(&DataKey::Factory);
+    });
+
+    // Deposit prize in prize_token — not payment_token.
+    client.deposit_prize();
+
+    let prize_ro = soroban_sdk::token::Client::new(&env, &prize_token);
+    let payment_ro = soroban_sdk::token::Client::new(&env, &payment_token);
+
+    // Contract holds prize_amount in prize_token; nothing in payment_token.
+    assert_eq!(prize_ro.balance(&contract_id), prize_amount);
+    assert_eq!(payment_ro.balance(&contract_id), 0);
+
+    // Creator lost prize_amount from prize_token only.
+    assert_eq!(prize_ro.balance(&creator), 1_000_000 - prize_amount);
+
+    // Buy a ticket — charges payment_token, not prize_token.
+    client.buy_tickets(&buyer, &1);
+    assert!(payment_ro.balance(&contract_id) > 0);
+    assert_eq!(prize_ro.balance(&contract_id), prize_amount);
+
+    // Finalize (Internal randomness resolves synchronously).
+    client.finalize_raffle();
+
+    let raffle = client.get_raffle();
+    assert_eq!(raffle.status, RaffleStatus::Finalized);
+    assert_eq!(raffle.winners.len(), 1);
+
+    let winner = raffle.winners.get(0).unwrap();
+
+    // Claim the prize — should transfer from prize_token.
+    let winner_prize_before = prize_ro.balance(&winner);
+    let winner_payment_before = payment_ro.balance(&winner);
+    let claimed = client.claim_prize(&winner, &0u32);
+    assert_eq!(claimed, prize_amount);
+
+    // Winner received the full prize in prize_token.
+    assert_eq!(prize_ro.balance(&winner), winner_prize_before + prize_amount);
+    // Winner's payment_token balance unchanged by the claim.
+    assert_eq!(payment_ro.balance(&winner), winner_payment_before);
+
+    // Raffle is fully claimed.
+    let raffle = client.get_raffle();
+    assert_eq!(raffle.status, RaffleStatus::Claimed);
+}

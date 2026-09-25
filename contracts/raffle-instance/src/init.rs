@@ -169,6 +169,13 @@ pub(crate) fn init(
     validate_category(&config.category)?;
 
     validate_token_address(&env, &config.payment_token)?;
+    if let Some(ref pt) = config.prize_token {
+        validate_token_address(&env, pt)?;
+    }
+    let prize_token = config
+        .prize_token
+        .clone()
+        .unwrap_or_else(|| config.payment_token.clone());
     let config = config.resolve_defaults();
 
     if config.claim_lockup_seconds.unwrap() > MAX_CLAIM_LOCKUP_SECONDS {
@@ -189,7 +196,7 @@ pub(crate) fn init(
         allow_multiple: config.allow_multiple,
         ticket_price: config.ticket_price,
         payment_token: config.payment_token.clone(),
-        prize_token: config.payment_token.clone(),
+        prize_token: prize_token.clone(),
         prize_amount: config.prize_amount,
         prizes: config.prizes.clone(),
         tickets_sold: 0,
@@ -282,7 +289,7 @@ fn validate_category(category: &Option<String>) -> Result<(), Error> {
 /// 1. Checks the contract is not paused.
 /// 2. Requires authorization from `raffle.creator`.
 /// 3. Guards against a second deposit (`prize_deposited == true`).
-/// 4. Calls `try_transfer` on the payment token to pull `prize_amount` from
+/// 4. Calls `try_transfer` on the prize token to pull `prize_amount` from
 ///    the creator into this contract address.
 /// 5. Sets `prize_deposited = true` and transitions status from
 ///    [`RaffleStatus::PendingPrize`] → [`RaffleStatus::Active`].
@@ -319,7 +326,7 @@ pub(crate) fn deposit_prize(env: Env) -> Result<(), Error> {
         return Err(Error::PrizeAlreadyDeposited);
     }
 
-    let token_client = token::Client::new(&env, &raffle.payment_token);
+    let token_client = token::Client::new(&env, &raffle.prize_token);
     let _ = token_client
         .try_transfer(&raffle.creator, env.current_contract_address(), &raffle.prize_amount)
         .map_err(|_| Error::TokenTransferFailed)?;
@@ -328,7 +335,7 @@ pub(crate) fn deposit_prize(env: Env) -> Result<(), Error> {
     let ts = env.ledger().timestamp();
     transition_status(&env, &mut raffle, RaffleStatus::Active, ts)?;
 
-    PrizeDeposited { creator: raffle.creator.clone(), amount: raffle.prize_amount, token: raffle.payment_token.clone(), timestamp: ts }.publish(&env);
+    PrizeDeposited { creator: raffle.creator.clone(), amount: raffle.prize_amount, token: raffle.prize_token.clone(), timestamp: ts }.publish(&env);
 
     Ok(())
 }

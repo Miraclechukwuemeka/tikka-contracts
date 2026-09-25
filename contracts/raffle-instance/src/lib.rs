@@ -64,8 +64,9 @@ pub struct Raffle {
     pub allow_multiple: bool,
     pub ticket_price: i128,
     pub payment_token: Address,
-    /// The token used for prize deposit and claims. The current initializer
-    /// always sets this to `payment_token`; the config override is not wired.
+    /// The token used for prize deposit and claims. May differ from
+    /// `payment_token` when the `prize_token` config override is provided;
+    /// otherwise it defaults to `payment_token`.
     pub prize_token: Address,
     pub prize_amount: i128,
     pub prizes: Vec<u32>,
@@ -322,8 +323,14 @@ if config.randomness_source == RandomnessSource::External {
         // Validate that the payment_token is a valid token contract
         validate_token_address(&env, &config.payment_token)?;
 
-        // The prize-token config override is not wired into initialization.
-        let prize_token = config.payment_token.clone();
+        // Honour the prize-token override if provided; otherwise default to payment_token.
+        if let Some(ref pt) = config.prize_token {
+            validate_token_address(&env, pt)?;
+        }
+        let prize_token = config
+            .prize_token
+            .clone()
+            .unwrap_or_else(|| config.payment_token.clone());
 
         // Resolve default values for fields that use 0 as "use default"
         let config = config.resolve_defaults();

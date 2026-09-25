@@ -235,8 +235,9 @@ pub struct RaffleConfig {
     pub unique_winners: bool,
     /// Optional tiered bundle pricing for ticket purchases.
     pub bundles: Vec<TicketBundle>,
-    /// Optional prize token override. The raffle-instance initializer does not
-    /// currently apply this field and always uses `payment_token`.
+    /// Optional prize token override. When `None`, the raffle instance
+    /// defaults to `payment_token`. When provided, prizes are deposited and
+    /// paid out in this token instead.
     pub prize_token: Option<Address>,
     /// Optional NFT contract for ticket receipts.
     pub nft_contract: Option<Address>,
