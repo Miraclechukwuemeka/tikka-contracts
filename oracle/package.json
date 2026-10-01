@@ -35,7 +35,7 @@
     "jest": "^30.5.2",
     "nock": "^13.5.4",
     "prettier": "^3.9.9",
-    "ts-jest": "^29.4.13",
+    "ts-jest": "^29.4.14",
     "typescript": "^5.4.5",
     "typescript-eslint": "^8.70.1"
   }
