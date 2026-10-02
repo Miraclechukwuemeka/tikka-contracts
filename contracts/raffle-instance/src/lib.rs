@@ -38,11 +38,12 @@ use self::randomness::{
 
 use crate::events::{
     CancelScheduled, ContractPaused, ContractUnpaused, DrawTriggered, EmergencyWithdrawn,
-    FeesWithdrawn, MetadataHashUpdated, OracleAddressUpdated, PrizeClaimed, PrizeDeposited,
-    PrizeRefunded, ProtocolFeeUpdated, RaffleCancelled, RaffleCreated, RaffleFailed,
-    RaffleFinalized, RaffleStatusChanged, RandomnessFallbackTriggered, RandomnessReceived,
-    RandomnessRequested, StorageWiped, SwapDeadlineUpdated, TicketNftMinted, TicketPurchased,
-    TicketRefunded, TicketSalesPaused, TicketSalesResumed, TokensRescued, WinnerDrawn,
+    FeesWithdrawn, MetadataHashUpdated, OracleAddressUpdated, OracleSeedDelivered, PrizeClaimed,
+    PrizeDeposited, PrizeRefunded, ProtocolFeeUpdated, RaffleCancelled, RaffleCreated,
+    RaffleFailed, RaffleFinalized, RaffleStatusChanged, RandomnessFallbackTriggered,
+    RandomnessReceived, RandomnessRequested, StorageWiped, SwapDeadlineUpdated, TicketNftMinted,
+    TicketPurchased, TicketRefunded, TicketSalesPaused, TicketSalesResumed, TokensRescued,
+    WinnerDrawn,
 };
 
 const RANDOMNESS_MIN_DELAY_LEDGERS: u32 = 10;
@@ -196,8 +197,16 @@ pub enum Error {
     InvalidEndTime = 62,
     InvalidAdminAddress = 63,
     RandomnessTooEarly = 64,
-    CancelTimelockActive = 65,
+    CancelTimelockActive = 67,
     CancelNotScheduled = 66,
+    /// The caller is not in the raffle's registered oracle list for quorum
+    /// randomness. Only addresses listed in `RandomnessSource::Quorum.oracles`
+    /// may call `provide_quorum_randomness`.
+    OracleNotRegistered = 68,
+    /// The oracle has already submitted a seed for this drawing round. Each
+    /// registered oracle may submit at most once per `provide_quorum_randomness`
+    /// round. Duplicate submissions are rejected to prevent seed manipulation.
+    DuplicateOracleSubmission = 69,
 }
 
 #[contractimpl]
@@ -451,6 +460,7 @@ if config.randomness_source == RandomnessSource::External {
     /// aggregated via `aggregate_quorum_seeds` and the raffle is finalized.
     pub fn provide_quorum_randomness(
         env: Env,
+        caller: Address,
         random_seed: u64,
         request_id: u64,
     ) -> Result<(), Error> {
@@ -463,9 +473,6 @@ if config.randomness_source == RandomnessSource::External {
             return Err(Error::DrawingAlreadyComplete);
         }
 
-        let caller = env
-            .invoker()
-            .expect("provide_quorum_randomness: invoker required");
         caller.require_auth();
 
         let raffle = read_raffle(&env)?;
@@ -513,12 +520,12 @@ if config.randomness_source == RandomnessSource::External {
         // Track submission order.
         let mut submitted: Vec<Address> = env
             .storage()
-            .persistent()
+            .instance()
             .get(&DataKey::QuorumSubmittedOracles)
             .unwrap_or_else(|| Vec::new(&env));
         submitted.push_back(caller.clone());
         env.storage()
-            .persistent()
+            .instance()
             .set(&DataKey::QuorumSubmittedOracles, &submitted);
 
         let count = submitted.len() as u32;

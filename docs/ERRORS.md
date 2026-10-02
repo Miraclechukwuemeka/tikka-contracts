@@ -26,109 +26,124 @@ The instance contract (`Raffle`) handles individual raffle operations. All error
 
 The protocol fee (`protocol_fee_bp`) is charged **once**, at ticket purchase. Winners receive the full gross prize amount on claim; `PrizeClaimed.platform_fee` is always `0`. Total protocol revenue equals the sum of fees collected from ticket sales.
 
-### General Errors (1-10)
-
-| Code | Error                        | Description                                   | Frontend Message                                |
-| ---- | ---------------------------- | --------------------------------------------- | ----------------------------------------------- |
-| 1    | `RaffleNotFound`             | The raffle data was not found in storage      | "Raffle not found"                              |
-| 2    | `RaffleInactive`             | The raffle is not in an active state          | "This raffle is not currently active"           |
-| 3    | `TicketsSoldOut`             | All tickets have been sold                    | "Sorry, all tickets have been sold!"            |
-| 4    | `InsufficientFunds`          | User does not have enough balance             | "Insufficient funds to complete this action"    |
-| 5    | `NotAuthorized`              | User is not authorized to perform this action | "You are not authorized to perform this action" |
-| 6    | `OracleNotSet`               | Oracle address is not configured              | "Oracle address is not set"                     |
-| 7    | `RandomnessAlreadyRequested` | Randomness has already been requested          | "Randomness request already in progress"        |
-| 8    | `NoRandomnessRequest`        | No randomness request found                   | "No randomness request found"                  |
-| 9    | `FallbackTooEarly`           | Fallback randomness triggered too early       | "Fallback randomness not available yet"         |
-
-### Prize/Claim Errors (11-20)
-
-| Code | Error                   | Description                         | Frontend Message                         |
-| ---- | ----------------------- | ----------------------------------- | ---------------------------------------- |
-| 11   | `PrizeNotDeposited`     | Prize has not been deposited yet    | "Prize not yet deposited"                |
-| 12   | `PrizeAlreadyClaimed`   | Prize has already been claimed      | "Prize has already been claimed"         |
-| 13   | `PrizeAlreadyDeposited` | Prize deposit was already completed | "Prize has already been deposited"       |
-| 14   | `NotWinner`             | Only the winner can claim the prize | "You are not the winner of this raffle"  |
-| 15   | `ClaimTooEarly`         | Cannot claim before cooldown period | "Please wait before claiming your prize" |
-
-### State/Validation Errors (21-30)
-
-| Code | Error                    | Description                                            | Frontend Message                                         |
-| ---- | ------------------------ | ------------------------------------------------------ | -------------------------------------------------------- |
-| 21   | `InvalidParameters`      | Invalid input parameters provided                      | "Invalid parameters provided"                            |
-| 22   | `InvalidQuantity`        | Invalid ticket quantity requested                      | "Invalid ticket quantity"                                |
-| 23   | `InvalidStatus`          | The current raffle status doesn't allow this operation | "This action is not allowed in the current raffle state" |
-| 24   | `ContractPaused`         | The contract is paused                                 | "Contract is temporarily paused"                         |
-| 25   | `InvalidStateTransition` | Cannot transition to the requested state               | "Cannot change raffle to the requested state"            |
-| 26   | `RaffleExpired`          | The raffle end time has passed                         | "This raffle has ended"                                  |
-
-### Ticket Errors (31-40)
-
-| Code | Error                       | Description                         | Frontend Message                               |
-| ---- | --------------------------- | ----------------------------------- | ---------------------------------------------- |
-| 31   | `InsufficientTickets`       | Not enough tickets sold to finalize | "Minimum ticket requirement not met"           |
-| 32   | `MultipleTicketsNotAllowed` | User already has a ticket           | "Multiple tickets not allowed for this raffle" |
-| 33   | `NoTicketsSold`             | No tickets have been purchased      | "No tickets have been sold yet"                |
-| 34   | `TicketNotFound`            | The requested ticket was not found  | "Ticket not found"                             |
-| 35   | `RaffleEnded`               | The raffle has already ended         | "This raffle has already ended"                |
-
-### System Errors (41-50)
-
-| Code | Error                    | Description                       | Frontend Message               |
-| ---- | ------------------------ | --------------------------------- | ------------------------------ |
-| 41   | `ArithmeticOverflow`     | Arithmetic operation overflow     | "Calculation error occurred"   |
-| 42   | `AlreadyInitialized`     | Contract is already initialized   | "Contract already initialized" |
-| 43   | `NotInitialized`         | Contract has not been initialized | "Contract not initialized"     |
-| 44   | `Reentrancy`             | Reentrant call detected           | "Please try again later"       |
-| 45   | `TokenTransferFailed`    | Token transfer failed             | "Token transfer failed"        |
-| 46   | `NoActiveTickets`        | No active tickets available       | "No active tickets available"  |
-| 47   | `DeadlinePassed`         | Swap deadline has passed          | "Swap deadline has passed"     |
-| 48   | `SlippageExceeded`       | Slippage tolerance exceeded       | "Slippage tolerance exceeded"  |
-| 49   | `InvalidIndex`           | Invalid index provided            | "Invalid index provided"       |
-| 50   | `MorePrizesThanTickets`  | More prizes than tickets          | "More prizes than tickets"     |
-
-### Additional Errors (51-63)
-
-| Code | Error                        | Description                              | Frontend Message                      |
-| ---- | ---------------------------- | ---------------------------------------- | ------------------------------------- |
-| 51   | `ZeroPrize`                  | Prize amount is zero                     | "Prize amount cannot be zero"         |
-| 52   | `InvalidTokenAddress`         | Invalid token address provided           | "Invalid token address"               |
-| 53   | `TooManyPrizes`              | Exceeds maximum number of prizes         | "Too many prizes configured"          |
-| 54   | `EmergencyTooEarly`          | Emergency withdraw too early            | "Emergency withdraw not available yet"|
-| 55   | `InvalidTicketRange`         | Invalid ticket range configured          | "Invalid ticket range"               |
-| 56   | `InsufficientAccumulatedFees`| Insufficient accumulated fees            | "Insufficient accumulated fees"       |
-| 57   | `PrizeConfigurationLocked`   | Prize configuration is locked            | "Prize configuration is locked"       |
-| 58   | `ExceedsMaxTicketsPerTx`     | Exceeds max tickets per transaction      | "Too many tickets for one transaction"|
-| 59   | `DrawingAlreadyInProgress`   | A draw is already in progress            | "Drawing already in progress"         |
-| 60   | `DrawingAlreadyComplete`     | Randomness was already provided            | "Drawing already complete"            |
-| 61   | `InvalidEndTime`             | Raffle end time is invalid               | "Invalid raffle end time"             |
-| 62   | `InvalidAdminAddress`        | Admin address is invalid                 | "Invalid admin address"               |
-| 63   | `InvalidStatusForDrawingTransition` | Raffle status cannot enter Drawing | "Cannot start drawing in current state"|
-
+| Code | Error | Description | Frontend Message |
+| ---- | ----- | ----------- | ---------------- |
+| 1 | `RaffleNotFound` | The raffle data was not found in storage | "Raffle not found" |
+| 2 | `RaffleInactive` | The raffle is not in an active state | "This raffle is not currently active" |
+| 3 | `TicketsSoldOut` | All tickets have been sold | "Sorry, all tickets have been sold!" |
+| 4 | `InsufficientFunds` | User does not have enough balance | "Insufficient funds to complete this action" |
+| 5 | `NotAuthorized` | User is not authorized to perform this action | "You are not authorized to perform this action" |
+| 6 | `OracleNotSet` | Oracle address is not configured | "Oracle address is not set" |
+| 7 | `RandomnessAlreadyRequested` | Randomness has already been requested | "Randomness request already in progress" |
+| 8 | `NoRandomnessRequest` | No randomness request found | "No randomness request found" |
+| 9 | `FallbackTooEarly` | Fallback randomness triggered too early | "Fallback randomness not available yet" |
+| 11 | `PrizeNotDeposited` | Prize has not been deposited yet | "Prize not yet deposited" |
+| 12 | `PrizeAlreadyClaimed` | Prize has already been claimed | "Prize has already been claimed" |
+| 13 | `PrizeAlreadyDeposited` | Prize deposit was already completed | "Prize has already been deposited" |
+| 14 | `NotWinner` | Only the winner can claim the prize | "You are not the winner of this raffle" |
+| 15 | `ClaimTooEarly` | Cannot claim before cooldown period | "Please wait before claiming your prize" |
+| 21 | `InvalidParameters` | Invalid input parameters provided | "Invalid parameters provided" |
+| 22 | `InvalidQuantity` | Invalid ticket quantity requested | "Invalid ticket quantity" |
+| 23 | `InvalidStatus` | The current raffle status doesn't allow this operation | "This action is not allowed in the current raffle state" |
+| 24 | `ContractPaused` | The contract is paused | "Contract is temporarily paused" |
+| 25 | `InvalidStateTransition` | Cannot transition to the requested state | "Cannot change raffle to the requested state" |
+| 26 | `RaffleExpired` | The raffle end time has passed | "This raffle has ended" |
+| 31 | `InsufficientTickets` | Not enough tickets sold to finalize | "Minimum ticket requirement not met" |
+| 32 | `MultipleTicketsNotAllowed` | User already has a ticket | "Multiple tickets not allowed for this raffle" |
+| 33 | `NoTicketsSold` | No tickets have been purchased | "No tickets have been sold yet" |
+| 34 | `TicketNotFound` | The requested ticket was not found | "Ticket not found" |
+| 35 | `RaffleEnded` | The raffle has already ended | "This raffle has already ended" |
+| 41 | `ArithmeticOverflow` | Arithmetic operation overflow | "Calculation error occurred" |
+| 42 | `AlreadyInitialized` | Contract is already initialized | "Contract already initialized" |
+| 43 | `NotInitialized` | Contract has not been initialized | "Contract not initialized" |
+| 44 | `Reentrancy` | Reentrant call detected | "Please try again later" |
+| 45 | `TokenTransferFailed` | Token transfer failed | "Token transfer failed" |
+| 46 | `NoActiveTickets` | No active tickets available | "No active tickets available" |
+| 47 | `DeadlinePassed` | Swap deadline has passed | "Swap deadline has passed" |
+| 48 | `SlippageExceeded` | Slippage tolerance exceeded | "Slippage tolerance exceeded" |
+| 49 | `InvalidIndex` | Invalid index provided | "Invalid index provided" |
+| 50 | `MorePrizesThanTickets` | More prizes than tickets | "More prizes than tickets" |
+| 51 | `ZeroPrize` | Prize amount is zero | "Prize amount cannot be zero" |
+| 52 | `InvalidTokenAddress` | Invalid token address provided | "Invalid token address" |
+| 53 | `TooManyPrizes` | Exceeds maximum number of prizes | "Too many prizes configured" |
+| 54 | `EmergencyTooEarly` | Emergency withdraw too early | "Emergency withdraw not available yet" |
+| 55 | `InvalidTicketRange` | Invalid ticket range configured | "Invalid ticket range" |
+| 56 | `InsufficientAccumulatedFees` | Insufficient accumulated fees | "Insufficient accumulated fees" |
+| 57 | `PrizeConfigurationLocked` | Prize configuration is locked | "Prize configuration is locked" |
+| 58 | `ExceedsMaxTicketsPerTx` | Exceeds max tickets per transaction | "Too many tickets for one transaction" |
+| 59 | `DrawingAlreadyInProgress` | A drawing is already in progress | "A drawing is already in progress" |
+| 60 | `InvalidStatusForDrawingTransition` | Invalid status for drawing transition | "Invalid status for drawing transition" |
+| 61 | `DrawingAlreadyComplete` | The drawing has already been completed | "The drawing has already been completed" |
+| 62 | `InvalidEndTime` | Invalid end time specified | "Invalid end time specified" |
+| 63 | `InvalidAdminAddress` | Invalid admin address provided | "Invalid admin address" |
+| 64 | `RandomnessTooEarly` | Randomness cannot be provided yet | "Randomness cannot be provided yet" |
+| 65 | `ExceedsMaxTicketsPerAddress` | Exceeds max tickets allowed per address | "You have reached the maximum ticket limit for this raffle" |
+| 66 | `CancelNotScheduled` | No admin cancellation is currently scheduled | "No admin cancellation is currently scheduled" |
+| 67 | `CancelTimelockActive` | Admin cancel is scheduled but the timelock has not elapsed | "Cancellation is scheduled — please wait for the timelock to expire" |
+| 68 | `OracleNotRegistered` | The caller is not in the registered oracle list for this quorum raffle | "Your address is not registered as an oracle for this raffle" |
+| 69 | `DuplicateOracleSubmission` | This oracle has already submitted a seed for the current drawing round | "You have already submitted a seed for this drawing round" |
 ---
 
 ## Factory Contract Errors
 
 The factory contract (`RaffleFactory`) manages raffle creation. All error codes are defined in the `ContractError` enum in [`contracts/raffle-factory/src/lib.rs`](contracts/raffle-factory/src/lib.rs).
 
-### General Errors (1-10)
-
-| Code | Error                | Description                    | Frontend Message                |
-| ---- | -------------------- | ------------------------------ | ------------------------------- |
-| 1    | `AlreadyInitialized` | Factory is already initialized | "Factory already initialized"   |
-| 2    | `NotAuthorized`      | User is not the admin          | "You are not the admin"         |
-| 3    | `ContractPaused`     | Factory is paused              | "Factory is temporarily paused" |
-| 4    | `InvalidParameters`  | Invalid parameters provided    | "Invalid parameters provided"   |
-| 5    | `RaffleNotFound`     | Raffle instance not found      | "Raffle not found"              |
-| 18   | `TreasuryNotSet`     | Treasury address is not configured | "Treasury address is not set" |
-
-### Admin Errors (11-20)
-
-| Code | Error                  | Description                    | Frontend Message                 |
-| ---- | ---------------------- | ------------------------------ | -------------------------------- |
-| 11   | `AdminTransferPending` | Admin transfer already pending | "Admin transfer already pending" |
-| 12   | `NoPendingTransfer`    | No pending admin transfer      | "No pending admin transfer"      |
-| 18   | `UnsupportedSac`       | Payment token is not whitelisted as a supported Stellar Asset Contract | "Unsupported payment token" |
-
+| Code | Error | Description | Frontend Message |
+| ---- | ----- | ----------- | ---------------- |
+| 1 | `RaffleNotFound` | The raffle data was not found in storage | "Raffle not found" |
+| 2 | `RaffleInactive` | The raffle is not in an active state | "This raffle is not currently active" |
+| 3 | `TicketsSoldOut` | All tickets have been sold | "Sorry, all tickets have been sold!" |
+| 4 | `InsufficientFunds` | User does not have enough balance | "Insufficient funds to complete this action" |
+| 5 | `NotAuthorized` | User is not authorized to perform this action | "You are not authorized to perform this action" |
+| 6 | `OracleNotSet` | Oracle address is not configured | "Oracle address is not set" |
+| 7 | `RandomnessAlreadyRequested` | Randomness has already been requested | "Randomness request already in progress" |
+| 8 | `NoRandomnessRequest` | No randomness request found | "No randomness request found" |
+| 9 | `FallbackTooEarly` | Fallback randomness triggered too early | "Fallback randomness not available yet" |
+| 11 | `PrizeNotDeposited` | Prize has not been deposited yet | "Prize not yet deposited" |
+| 12 | `PrizeAlreadyClaimed` | Prize has already been claimed | "Prize has already been claimed" |
+| 13 | `PrizeAlreadyDeposited` | Prize deposit was already completed | "Prize has already been deposited" |
+| 14 | `NotWinner` | Only the winner can claim the prize | "You are not the winner of this raffle" |
+| 15 | `ClaimTooEarly` | Cannot claim before cooldown period | "Please wait before claiming your prize" |
+| 21 | `InvalidParameters` | Invalid input parameters provided | "Invalid parameters provided" |
+| 22 | `InvalidQuantity` | Invalid ticket quantity requested | "Invalid ticket quantity" |
+| 23 | `InvalidStatus` | The current raffle status doesn't allow this operation | "This action is not allowed in the current raffle state" |
+| 24 | `ContractPaused` | The contract is paused | "Contract is temporarily paused" |
+| 25 | `InvalidStateTransition` | Cannot transition to the requested state | "Cannot change raffle to the requested state" |
+| 26 | `RaffleExpired` | The raffle end time has passed | "This raffle has ended" |
+| 31 | `InsufficientTickets` | Not enough tickets sold to finalize | "Minimum ticket requirement not met" |
+| 32 | `MultipleTicketsNotAllowed` | User already has a ticket | "Multiple tickets not allowed for this raffle" |
+| 33 | `NoTicketsSold` | No tickets have been purchased | "No tickets have been sold yet" |
+| 34 | `TicketNotFound` | The requested ticket was not found | "Ticket not found" |
+| 35 | `RaffleEnded` | The raffle has already ended | "This raffle has already ended" |
+| 41 | `ArithmeticOverflow` | Arithmetic operation overflow | "Calculation error occurred" |
+| 42 | `AlreadyInitialized` | Contract is already initialized | "Contract already initialized" |
+| 43 | `NotInitialized` | Contract has not been initialized | "Contract not initialized" |
+| 44 | `Reentrancy` | Reentrant call detected | "Please try again later" |
+| 45 | `TokenTransferFailed` | Token transfer failed | "Token transfer failed" |
+| 46 | `NoActiveTickets` | No active tickets available | "No active tickets available" |
+| 47 | `DeadlinePassed` | Swap deadline has passed | "Swap deadline has passed" |
+| 48 | `SlippageExceeded` | Slippage tolerance exceeded | "Slippage tolerance exceeded" |
+| 49 | `InvalidIndex` | Invalid index provided | "Invalid index provided" |
+| 50 | `MorePrizesThanTickets` | More prizes than tickets | "More prizes than tickets" |
+| 51 | `ZeroPrize` | Prize amount is zero | "Prize amount cannot be zero" |
+| 52 | `InvalidTokenAddress` | Invalid token address provided | "Invalid token address" |
+| 53 | `TooManyPrizes` | Exceeds maximum number of prizes | "Too many prizes configured" |
+| 54 | `EmergencyTooEarly` | Emergency withdraw too early | "Emergency withdraw not available yet" |
+| 55 | `InvalidTicketRange` | Invalid ticket range configured | "Invalid ticket range" |
+| 56 | `InsufficientAccumulatedFees` | Insufficient accumulated fees | "Insufficient accumulated fees" |
+| 57 | `PrizeConfigurationLocked` | Prize configuration is locked | "Prize configuration is locked" |
+| 58 | `ExceedsMaxTicketsPerTx` | Exceeds max tickets per transaction | "Too many tickets for one transaction" |
+| 59 | `DrawingAlreadyInProgress` | A drawing is already in progress | "A drawing is already in progress" |
+| 60 | `InvalidStatusForDrawingTransition` | Invalid status for drawing transition | "Invalid status for drawing transition" |
+| 61 | `DrawingAlreadyComplete` | The drawing has already been completed | "The drawing has already been completed" |
+| 62 | `InvalidEndTime` | Invalid end time specified | "Invalid end time specified" |
+| 63 | `InvalidAdminAddress` | Invalid admin address provided | "Invalid admin address" |
+| 64 | `RandomnessTooEarly` | Randomness cannot be provided yet | "Randomness cannot be provided yet" |
+| 65 | `ExceedsMaxTicketsPerAddress` | Exceeds max tickets allowed per address | "You have reached the maximum ticket limit for this raffle" |
+| 66 | `CancelNotScheduled` | No admin cancellation is currently scheduled | "No admin cancellation is currently scheduled" |
+| 67 | `CancelTimelockActive` | Admin cancel is scheduled but the timelock has not elapsed | "Cancellation is scheduled — please wait for the timelock to expire" |
+| 68 | `OracleNotRegistered` | The caller is not in the registered oracle list for this quorum raffle | "Your address is not registered as an oracle for this raffle" |
+| 69 | `DuplicateOracleSubmission` | This oracle has already submitted a seed for the current drawing round | "You have already submitted a seed for this drawing round" |
 ---
 
 ## Error Code Mapping

@@ -94,6 +94,17 @@ def generate_markdown_table(errors):
         'InsufficientAccumulatedFees': 'Insufficient accumulated fees',
         'PrizeConfigurationLocked': 'Prize configuration is locked',
         'ExceedsMaxTicketsPerTx': 'Exceeds max tickets per transaction',
+        'ExceedsMaxTicketsPerAddress': 'Exceeds max tickets allowed per address',
+        'DrawingAlreadyInProgress': 'A drawing is already in progress',
+        'InvalidStatusForDrawingTransition': 'Invalid status for drawing transition',
+        'DrawingAlreadyComplete': 'The drawing has already been completed',
+        'InvalidEndTime': 'Invalid end time specified',
+        'InvalidAdminAddress': 'Invalid admin address provided',
+        'RandomnessTooEarly': 'Randomness cannot be provided yet',
+        'CancelTimelockActive': 'Admin cancel is scheduled but the timelock has not elapsed',
+        'CancelNotScheduled': 'No admin cancellation is currently scheduled',
+        'OracleNotRegistered': 'The caller is not in the registered oracle list for this quorum raffle',
+        'DuplicateOracleSubmission': 'This oracle has already submitted a seed for the current drawing round',
     }
     
     messages = {
@@ -140,6 +151,17 @@ def generate_markdown_table(errors):
         'InsufficientAccumulatedFees': '"Insufficient accumulated fees"',
         'PrizeConfigurationLocked': '"Prize configuration is locked"',
         'ExceedsMaxTicketsPerTx': '"Too many tickets for one transaction"',
+        'ExceedsMaxTicketsPerAddress': '"You have reached the maximum ticket limit for this raffle"',
+        'DrawingAlreadyInProgress': '"A drawing is already in progress"',
+        'InvalidStatusForDrawingTransition': '"Invalid status for drawing transition"',
+        'DrawingAlreadyComplete': '"The drawing has already been completed"',
+        'InvalidEndTime': '"Invalid end time specified"',
+        'InvalidAdminAddress': '"Invalid admin address"',
+        'RandomnessTooEarly': '"Randomness cannot be provided yet"',
+        'CancelTimelockActive': '"Cancellation is scheduled — please wait for the timelock to expire"',
+        'CancelNotScheduled': '"No admin cancellation is currently scheduled"',
+        'OracleNotRegistered': '"Your address is not registered as an oracle for this raffle"',
+        'DuplicateOracleSubmission': '"You have already submitted a seed for this drawing round"',
     }
     
     for code, name in errors:
@@ -200,6 +222,17 @@ def generate_typescript_mapping(errors):
         'InsufficientAccumulatedFees': 'Insufficient accumulated fees',
         'PrizeConfigurationLocked': 'Prize configuration is locked',
         'ExceedsMaxTicketsPerTx': 'Too many tickets for one transaction',
+        'ExceedsMaxTicketsPerAddress': 'You have reached the maximum ticket limit for this raffle',
+        'DrawingAlreadyInProgress': 'A drawing is already in progress',
+        'InvalidStatusForDrawingTransition': 'Invalid status for drawing transition',
+        'DrawingAlreadyComplete': 'The drawing has already been completed',
+        'InvalidEndTime': 'Invalid end time specified',
+        'InvalidAdminAddress': 'Invalid admin address',
+        'RandomnessTooEarly': 'Randomness cannot be provided yet',
+        'CancelTimelockActive': 'Cancellation is scheduled — please wait for the timelock to expire',
+        'CancelNotScheduled': 'No admin cancellation is currently scheduled',
+        'OracleNotRegistered': 'Your address is not registered as an oracle for this raffle',
+        'DuplicateOracleSubmission': 'You have already submitted a seed for this drawing round',
     }
     
     for code, name in errors:
