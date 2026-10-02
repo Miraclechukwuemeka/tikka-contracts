@@ -193,6 +193,7 @@ pub enum DataKey {
     ReentrancyGuard,
     Paused,
     Admin,
+    PendingAdmin,
     RandomnessSeed,
     RandomnessRequested,
     RandomnessRequestLedger,
@@ -818,6 +819,14 @@ if config.randomness_source == RandomnessSource::External {
         #[cfg(any(test, feature = "testutils"))]
         assert_solvent_after_success(&env, &result);
         result
+    }
+
+    pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        admin::transfer_admin(env, new_admin)
+    }
+
+    pub fn accept_admin(env: Env) -> Result<(), Error> {
+        admin::accept_admin(env)
     }
 
     pub fn withdraw_fees(env: Env, recipient: Address, amount: i128) -> Result<(), Error> {
