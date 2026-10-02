@@ -20,6 +20,12 @@ mod tickets;
 mod views;
 
 pub(crate) use helpers::do_finalize_with_seed;
+pub(crate) use helpers::{
+    acquire_guard, bump_raffle_ttl, build_internal_seed_u64, calculate_tier_prize,
+    enforce_swap_guard, get_ticket_owner, Guard, read_raffle, release_guard,
+    require_admin, require_global_not_paused, require_not_paused, request_randomness,
+    revert_status, transition_status, transition_to_drawing, write_raffle,
+};
 
 use raffle_shared::{
     constants::{
@@ -146,7 +152,6 @@ pub struct CommitRevealEntry {
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub enum Error {
-    RaffleNotFound = 1,
     RaffleInactive = 2,
     TicketsSoldOut = 3,
     InsufficientFunds = 4,
@@ -170,7 +175,6 @@ pub enum Error {
     MultipleTicketsNotAllowed = 32,
     NoTicketsSold = 33,
     TicketNotFound = 34,
-    RaffleEnded = 35,
     ArithmeticOverflow = 41,
     AlreadyInitialized = 42,
     NotInitialized = 43,
@@ -189,9 +193,8 @@ pub enum Error {
     InsufficientAccumulatedFees = 56,
     PrizeConfigurationLocked = 57,
     ExceedsMaxTicketsPerTx = 58,
-    ExceedsMaxTicketsPerAddress = 65,
+    ExceedsMaxTicketsPerAddress = 67,
     DrawingAlreadyInProgress = 59,
-    InvalidStatusForDrawingTransition = 60, // Note: This seems to be a copy-paste error in the original code.
     DrawingAlreadyComplete = 61,
     InvalidEndTime = 62,
     InvalidAdminAddress = 63,
@@ -756,8 +759,6 @@ if config.randomness_source == RandomnessSource::External {
         // To complete the refactor, this logic should be moved to `admin.rs`.
         Err(Error::InvalidParameters)
     }
-
-}
 
     /// Permissionless entrypoint — anyone may call this to prevent a raffle
     /// from being archived by Soroban's TTL expiry.

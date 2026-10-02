@@ -204,8 +204,13 @@ pub struct RaffleConfig {
     pub randomness_source: RandomnessSource,
     /// Optional oracle contract address for external randomness flows.
     pub oracle_address: Option<Address>,
-    /// Protocol fee in basis points (100 = 1%). Currently charged at ticket
-    /// purchase only. See docs/FEE_MODEL.md for the implemented fee model.
+    /// Protocol fee in basis points (100 = 1%).
+    ///
+    /// Charged **once**, at ticket purchase, using floor division:
+    /// `fee = floor(total_price × protocol_fee_bp / 10000)`.
+    /// Prize claims do **not** incur a protocol fee.
+    /// See [`docs/FEE_MODEL.md`](../../../../docs/FEE_MODEL.md) for the full
+    /// specification and rounding rules.
     pub protocol_fee_bp: u32,
     /// Optional treasury recipient address for protocol fees.
     pub treasury_address: Option<Address>,
@@ -349,6 +354,49 @@ pub struct PageResultTickets {
     pub total: u32,
     /// True when more records are available after this page.
     pub has_more: bool,
+}
+
+/// Per-winner record stored in a finalized [`Raffle`].
+///
+/// Replaces the former parallel arrays `winners: Vec<Address>` and
+/// `claimed_winners: Vec<bool>` with a single typed struct per tier.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[contracttype]
+pub struct Winner {
+    /// Address of the winning ticket owner.
+    pub address: Address,
+    /// Whether this winner has already claimed their prize.
+    pub claimed: bool,
+    /// Index into the raffle's `prizes` vector that this winner receives.
+    pub prize_index: u32,
+}
+
+/// Pricing breakdown returned by `preview_buy` and used internally by
+/// `buy_tickets` to compute the exact charge.
+///
+/// All amounts are in the raffle's payment token's base units.
+///
+/// ## Rounding
+///
+/// `fee` uses **floor** division (`total_price × protocol_fee_bp / 10000`),
+/// matching the on-chain implementation.  Any fractional unit stays in the
+/// contract and is not charged to the buyer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[contracttype]
+pub struct BuyQuote {
+    /// `ticket_price × quantity` before any discount.
+    pub gross: i128,
+    /// Total early-bird discount deducted (0 when no discount applies).
+    pub discount: i128,
+    /// Protocol fee: `floor((gross − discount) × protocol_fee_bp / 10000)`.
+    /// This is the **only** fee charged in the entire raffle lifecycle.
+    /// Prize-claim fees are not implemented.
+    pub fee: i128,
+    /// Exact amount the buyer must transfer: `gross − discount`.
+    /// The `fee` is routed from this amount to the treasury.
+    pub net_to_pay: i128,
+    /// Effective per-ticket price after discount: `(gross − discount) / quantity`.
+    pub effective_ticket_price: i128,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

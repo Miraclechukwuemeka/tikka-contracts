@@ -184,14 +184,13 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
     }
 
     let timestamp = env.ledger().timestamp();
-    let total_price = raffle
-        .ticket_price
-        .checked_mul(quantity as i128)
-        .ok_or(Error::ArithmeticOverflow)?;
-    let protocol_fee = total_price
-        .checked_mul(raffle.protocol_fee_bp as i128)
-        .ok_or(Error::ArithmeticOverflow)?
-        / 10000;
+    // Use calculate_buy_quote — the same function called by preview_buy — so
+    // the on-chain charge can never diverge from the previewed amount.
+    // Fee formula: floor(total_price × protocol_fee_bp / 10000).  Floor
+    // division is used so the buyer is never charged more than the quoted fee.
+    let quote = calculate_buy_quote(&raffle, quantity)?;
+    let total_price = quote.net_to_pay;
+    let protocol_fee = quote.fee;
 
     let persisted = crate::read_raffle(&env)?;
     let persisted_sold = persisted.tickets_sold;
@@ -324,7 +323,7 @@ pub(crate) fn buy_tickets(env: Env, buyer: Address, quantity: u32) -> Result<u32
         ticket_ids,
         quantity,
         ticket_price: raffle.ticket_price,
-        effective_ticket_price: effective_price,
+        effective_ticket_price: quote.effective_ticket_price,
         total_paid: total_price,
         protocol_fee,
         timestamp,

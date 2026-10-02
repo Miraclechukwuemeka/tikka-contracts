@@ -251,9 +251,6 @@ pub(crate) fn calculate_tier_prize(raffle: &Raffle, tier_index: u32) -> Result<i
         .map(|a| a / 10000)
 }
 
-    initial_index
-}
-
 /// Finalize the raffle using a pre-computed `u64` seed.
 ///
 /// This is the common finalization path shared by all three randomness modes
@@ -401,6 +398,113 @@ pub(crate) fn do_finalize_with_seed(
 
     bump_raffle_ttl(env, total_tickets);
     Ok(())
+}
+
+/// Bump TTL on the raffle instance storage and a sample of ticket entries so
+/// long-running raffles are not archived by ledger garbage collection.
+///
+/// Called on every hot-path write (ticket purchase, finalization).  Uses the
+/// threshold/target pattern: the extend only fires when fewer than
+/// `INSTANCE_TTL_THRESHOLD_LEDGERS` ledgers remain, avoiding spurious writes
+/// on every transaction.
+pub(crate) fn bump_raffle_ttl(env: &Env, _tickets_sold: u32) {
+    use raffle_shared::constants::{
+        INSTANCE_TTL_BUMP_LEDGERS, INSTANCE_TTL_THRESHOLD_LEDGERS,
+        PERSISTENT_TTL_BUMP_LEDGERS, PERSISTENT_TTL_THRESHOLD_LEDGERS,
+    };
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD_LEDGERS, INSTANCE_TTL_BUMP_LEDGERS);
+    // Bump the raffle record in persistent storage too.
+    env.storage()
+        .persistent()
+        .extend_ttl(&DataKey::Raffle, PERSISTENT_TTL_THRESHOLD_LEDGERS, PERSISTENT_TTL_BUMP_LEDGERS);
+}
+
+/// Compute the exact cost of buying `quantity` tickets, including early-bird
+/// discounts and the protocol fee.
+///
+/// This is the **single source of truth** for purchase pricing — it is called
+/// by both `buy_tickets` (at execution time) and `preview_buy` (read-only).
+/// Keeping the logic here guarantees the preview can never diverge from the
+/// on-chain charge.
+///
+/// ## Protocol fee rounding
+///
+/// The fee uses **floor** division:
+/// `fee = (gross − discount) × protocol_fee_bp / 10000`
+/// Any fractional unit stays in the contract — the buyer is never charged more
+/// than this formula yields.  Claim-time fees are not implemented.
+///
+/// ## Early-bird discount
+///
+/// When `early_bird_ticket_percentage > 0` and the current `tickets_sold` is
+/// below the early-bird threshold, each ticket in this purchase that falls
+/// within the threshold receives a discount of `early_bird_discount_bp` basis
+/// points off `ticket_price`.  Tickets beyond the threshold pay full price.
+pub(crate) fn calculate_buy_quote(raffle: &Raffle, quantity: u32) -> Result<raffle_shared::BuyQuote, Error> {
+    if quantity == 0 {
+        return Err(Error::InvalidQuantity);
+    }
+
+    // --- Gross total (no discount) -----------------------------------------
+    let gross = raffle
+        .ticket_price
+        .checked_mul(quantity as i128)
+        .ok_or(Error::InvalidParameters)?;
+
+    // --- Early-bird discount -------------------------------------------------
+    let discount = if raffle.early_bird_ticket_percentage > 0 && raffle.early_bird_discount_bp > 0 {
+        let threshold = raffle
+            .max_tickets
+            .checked_mul(raffle.early_bird_ticket_percentage)
+            .ok_or(Error::ArithmeticOverflow)?
+            / 100;
+
+        // How many of the tickets in this purchase fall within the early-bird window?
+        let already_sold = raffle.tickets_sold;
+        let discounted_qty = if already_sold >= threshold {
+            0u32
+        } else {
+            let remaining_in_window = threshold - already_sold;
+            quantity.min(remaining_in_window)
+        };
+
+        if discounted_qty == 0 {
+            0i128
+        } else {
+            let discount_per_ticket = raffle
+                .ticket_price
+                .checked_mul(raffle.early_bird_discount_bp as i128)
+                .ok_or(Error::ArithmeticOverflow)?
+                / 10000;
+            discount_per_ticket
+                .checked_mul(discounted_qty as i128)
+                .ok_or(Error::ArithmeticOverflow)?
+        }
+    } else {
+        0i128
+    };
+
+    // --- Net amount buyer pays -----------------------------------------------
+    let net_to_pay = gross.checked_sub(discount).ok_or(Error::ArithmeticOverflow)?;
+
+    // --- Protocol fee: floor(net_to_pay × bp / 10000) ------------------------
+    let fee = net_to_pay
+        .checked_mul(raffle.protocol_fee_bp as i128)
+        .ok_or(Error::ArithmeticOverflow)?
+        / 10000;
+
+    // --- Effective per-ticket price -------------------------------------------
+    let effective_ticket_price = net_to_pay / quantity as i128;
+
+    Ok(raffle_shared::BuyQuote {
+        gross,
+        discount,
+        fee,
+        net_to_pay,
+        effective_ticket_price,
+    })
 }
 
 fn record_leaderboard(env: &Env, raffle: &Raffle) {

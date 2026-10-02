@@ -2,6 +2,8 @@
 
 #[path = "tests/admin.rs"]
 mod admin;
+#[path = "tests/fees.rs"]
+mod fees;
 #[path = "tests/invariants.rs"]
 mod invariants;
 #[path = "tests/tickets.rs"]
@@ -1478,13 +1480,15 @@ fn emergency_withdraw_sets_status_to_cancelled_and_clears_prize_deposited() {
     assert!(!guard_set);
 }
 
+/// Regression test for #753: claim_prize must NOT deduct a protocol fee.
+/// The fee is collected once at purchase; the winner receives the full prize.
 #[test]
-fn test_claim_prize_deducts_protocol_fee() {
+fn test_claim_prize_no_fee_deducted() {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set_timestamp(1_000);
 
-    let factory = Address::generate(&env);
+    let factory = env.register(MockFactory, ());
     let admin = Address::generate(&env);
     let creator = Address::generate(&env);
     let buyer = Address::generate(&env);
@@ -1494,82 +1498,77 @@ fn test_claim_prize_deducts_protocol_fee() {
         .register_stellar_asset_contract_v2(token_admin.clone())
         .address();
     let token_client = StellarAssetClient::new(&env, &payment_token);
-    token_client.mint(&creator, &1_000_000);
+    let prize_amount = MIN_TICKET_PRICE * 10;
+    token_client.mint(&creator, &(prize_amount + 1_000_000));
     token_client.mint(&buyer, &1_000_000);
 
     let contract_id = env.register(Contract, ());
     let client = ContractClient::new(&env, &contract_id);
 
     let config = RaffleConfig {
-        description: String::from_str(&env, "Test"),
-        end_time: 2_000,
-        no_deadline: false,
-        description: String::from_str(&env, "Claim gross"),
+        description: String::from_str(&env, "no claim fee"),
         end_time: 0,
         no_deadline: true,
         max_tickets: 1,
         max_tickets_per_tx: 1,
+        max_tickets_per_address: 0,
         min_tickets: 1,
         allow_multiple: true,
         ticket_price: MIN_TICKET_PRICE,
         payment_token: payment_token.clone(),
-        prize_amount: MIN_TICKET_PRICE * 10,
-        prizes: soroban_sdk::vec![&env, 10000],
+        prize_amount,
+        prizes: soroban_sdk::vec![&env, 10_000u32],
         randomness_source: RandomnessSource::Internal,
         oracle_address: None,
-        protocol_fee_bp: 0,
+        protocol_fee_bp: 1_000, // 10%
         treasury_address: None,
         swap_router: None,
         tikka_token: None,
         unique_winners: false,
-            metadata_hash: BytesN::from_array(&env, &[17; 32]),
-        claim_lockup_seconds: 0,
-        protocol_fee_bp: 1_000,
-        treasury_address: None,
-        swap_router: None,
-        tikka_token: None,
         metadata_hash: BytesN::from_array(&env, &[7; 32]),
-        claim_lockup_seconds: None,
-        swap_deadline_seconds: None,
+        claim_lockup_seconds: Some(0),
+        swap_deadline_seconds: Some(0),
+        early_bird_ticket_percentage: 0,
+        early_bird_discount_bp: 0,
+        category: None,
+        bundles: soroban_sdk::Vec::new(&env),
+        prize_token: None,
+        nft_contract: None,
     };
 
     client.init(&factory, &admin, &creator, &config);
+    env.as_contract(&contract_id, || {
+        env.storage().instance().remove(&DataKey::Factory);
+    });
     client.deposit_prize();
-    client.buy_tickets(&creator, &1);
-    client.finalize_raffle();
-
-    let before = client.get_raffle();
-    assert_eq!(before.status, RaffleStatus::Finalized);
-    assert!(before.prize_deposited);
-
-    env.ledger()
-        .set_timestamp(1_000 + EMERGENCY_WITHDRAW_DELAY_SECONDS + 1);
-
-    client.emergency_withdraw(&creator);
-
-    let after = client.get_raffle();
-    assert_eq!(after.status, RaffleStatus::Cancelled);
-    assert!(!after.prize_deposited);
     client.buy_tickets(&buyer, &1);
     client.finalize_raffle();
 
-    env.ledger()
-        .set_timestamp(1_000 + DEFAULT_CLAIM_LOCKUP_SECONDS + 1);
-    let winner = client.get_raffle().winners.get(0).unwrap();
+    env.ledger().set_timestamp(2_000);
+    let winner_entry = client.get_raffle().winners.get(0).unwrap();
+    let winner = winner_entry.address;
     let balance_before = soroban_sdk::token::Client::new(&env, &payment_token).balance(&winner);
 
     let claimed = client.claim_prize(&winner, &0);
-    let gross = MIN_TICKET_PRICE * 10;
-    
-    let prize_fee = (gross * 1_000 + 9999) / 10_000;
-    let net = gross - prize_fee;
-    assert_eq!(claimed, gross); // The return value is the gross amount
+
+    // Return value is the gross prize amount.
+    assert_eq!(claimed, prize_amount, "claim_prize return value must be the full prize amount");
 
     let balance_after = soroban_sdk::token::Client::new(&env, &payment_token).balance(&winner);
-    assert_eq!(balance_after, balance_before + net);
+    // Winner receives full prize — no claim-time fee deduction.
+    assert_eq!(
+        balance_after,
+        balance_before + prize_amount,
+        "winner must receive full prize; no fee deducted at claim time (#753)"
+    );
 
-    let ticket_fee = (MIN_TICKET_PRICE * 1_000 + 9999) / 10_000;
-    assert_eq!(client.get_accumulated_fees(), ticket_fee + prize_fee);
+    // Only the purchase-time fee (floor: MIN_TICKET_PRICE × 1000 / 10000) should be accumulated.
+    let purchase_fee = MIN_TICKET_PRICE * 1_000 / 10_000;
+    assert_eq!(
+        client.get_accumulated_fees(),
+        purchase_fee,
+        "only the purchase-time fee should be accumulated"
+    );
 }
 
 #[test]

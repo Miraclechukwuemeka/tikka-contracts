@@ -1,4 +1,4 @@
-pub use raffle_shared::events::{ContractPaused, ContractUnpaused};
+pub use raffle_shared::events::{ContractPaused as SharedContractPaused, ContractUnpaused as SharedContractUnpaused};
 use raffle_shared::{CancelReason, FailureReason, RandomnessSource, RandomnessType};
 use soroban_sdk::{contractevent, Address, BytesN, String, Vec};
 
