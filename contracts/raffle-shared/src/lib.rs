@@ -2,7 +2,19 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 pub mod constants;
+pub mod config_builder;
+pub mod errors;
 pub mod events;
+pub mod math;
+
+pub use math::{apply_bp, split_bp, BP_DENOMINATOR};
+
+pub use config_builder::{ConfigValidationError, RaffleConfigBuilder};
+
+/// Apply a basis-point rate using floor division, returning `None` on overflow.
+pub fn apply_bp(amount: i128, bp: u32) -> Option<i128> {
+    amount.checked_mul(bp as i128).map(|value| value / 10_000)
+}
 
 #[cfg(test)]
 mod nft_mint_test;
@@ -147,13 +159,21 @@ pub enum RandomnessType {
     Vrf = 1,
     /// Fallback path used when preferred randomness path is unavailable.
     Fallback = 2,
+    /// k-of-n quorum of oracles; seed is aggregated from revealed quorum
+    /// contributions after each reveal was verified against its commitment.
+    Quorum = 3,
 }
 
 /// Configuration for a recurring (subscription) raffle.
 ///
 /// Enables automatic creation of new raffle instances at a fixed interval
-/// without manual re-deployment.  Designed for weekly / monthly raffles.
-#[derive(Clone)]
+/// without manual re-deployment. Designed for weekly / monthly raffles.
+///
+/// Note: Prize funding is not automatic. When each round is triggered, the
+/// deployed raffle instance starts in `PendingPrize` state. The raffle creator
+/// (or authorized funder) must call `deposit_prize` on the newly deployed
+/// raffle instance to activate ticket sales.
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct RecurringRaffleConfig {
     /// The base raffle configuration reused for every round.
@@ -162,9 +182,6 @@ pub struct RecurringRaffleConfig {
     pub interval_seconds: u64,
     /// Maximum number of rounds (0 = infinite).
     pub max_rounds: u32,
-    /// If true, the creator must pre-authorise the prize funds (not yet
-    /// implemented — reserved for future use).
-    pub auto_fund: bool,
 }
 
 /// Configuration payload used when creating a new raffle.
@@ -176,7 +193,11 @@ pub struct RecurringRaffleConfig {
 pub struct RaffleConfig {
     /// Human-readable raffle description.
     pub description: String,
-    /// Unix timestamp when ticket sales close (ignored when `no_deadline` is true).
+    /// Unix timestamp when ticket sales close (ignored when `no_deadline` is
+    /// true). Exclusive boundary: sales are open while
+    /// `ledger_timestamp < end_time`; the deadline is reached starting at
+    /// `ledger_timestamp == end_time`. Validated at `init` to be strictly in
+    /// the future. See `docs/GLOSSARY.md` § "End Time".
     pub end_time: u64,
     /// If true, raffle can remain open without a hard end timestamp.
     pub no_deadline: bool,
@@ -204,6 +225,16 @@ pub struct RaffleConfig {
     pub randomness_source: RandomnessSource,
     /// Optional oracle contract address for external randomness flows.
     pub oracle_address: Option<Address>,
+    /// Protocol fee in basis points (100 = 1%), applied to ticket purchases
+    /// and prize claims. See docs/FEE_MODEL.md for the fee model.
+    /// Ed25519 public key (32 bytes) belonging to the registered oracle.
+    ///
+    /// Required when `randomness_source == External`.  The raffle-instance
+    /// stores this key and rejects any `provide_randomness` call whose
+    /// `public_key` argument does not match — preventing an adversary from
+    /// substituting a throwaway keypair whose proof hashes to a favourable
+    /// seed (#985).
+    pub oracle_public_key: Option<BytesN<32>>,
     /// Protocol fee in basis points (100 = 1%). Currently charged at ticket
     /// purchase only. See docs/FEE_MODEL.md for the implemented fee model.
     pub protocol_fee_bp: u32,
@@ -218,6 +249,10 @@ pub struct RaffleConfig {
     /// Seconds after finalization before winners may claim.
     /// Must be in [0, 604800] (0 to 7 days). Defaults to 3600 (1 hour) if not provided (None).
     pub claim_lockup_seconds: Option<u64>,
+    /// Seconds after finalization before unclaimed prizes may be swept to the
+    /// treasury.  Must be at least [`MIN_CLAIM_EXPIRY_SECONDS`] and strictly
+    /// greater than `claim_lockup_seconds`.  Defaults to 30 days if not set.
+    pub claim_expiry_seconds: Option<u64>,
     /// Swap deadline window in seconds (added to current timestamp for token swaps).
     /// Defaults to 300 (5 minutes) if not provided (None). Configurable to handle network congestion.
     pub swap_deadline_seconds: Option<u64>,
@@ -244,6 +279,20 @@ pub struct RaffleConfig {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
+pub struct RaffleStats {
+    pub tickets_sold: u32,
+    pub unique_buyers: u32,
+    pub gross_revenue: i128,
+    pub fees_accrued: i128,
+    pub prize_funded: bool,
+    pub status: RaffleStatus,
+    pub time_remaining: u64,
+    pub claimed_prizes: u32,
+    pub swept_prizes: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[contracttype]
 pub struct TicketBundle {
     pub quantity: u32,
     pub price_per_ticket: i128,
@@ -256,6 +305,9 @@ impl RaffleConfig {
         }
         if self.swap_deadline_seconds.is_none() {
             self.swap_deadline_seconds = Some(DEFAULT_SWAP_DEADLINE_SECONDS);
+        }
+        if self.claim_expiry_seconds.is_none() {
+            self.claim_expiry_seconds = Some(DEFAULT_CLAIM_EXPIRY_SECONDS);
         }
         self
     }
@@ -272,7 +324,11 @@ impl RaffleConfig {
 pub struct Ticket {
     /// Monotonic ticket identifier scoped to a raffle.
     pub id: u32,
-    /// Address that owns this ticket.
+    /// Address that owns this ticket, i.e. the entrant in the draw.
+    ///
+    /// For a gift purchase (`buy_tickets_for`) this is the recipient and may
+    /// differ from [`Ticket::payer`]. The owner never receives refunds: see
+    /// [`Ticket::payer`].
     pub owner: Address,
     /// Unix timestamp when the ticket was purchased.
     pub purchase_time: u64,
@@ -280,21 +336,44 @@ pub struct Ticket {
     /// It is kept equal to `id` for the current contract implementation.
     pub ticket_number: u32,
     /// The address that paid for this ticket.
+    ///
+    /// Refunds follow the payer, never the owner, so that a refund always
+    /// returns funds to the party that was out of pocket. This holds for every
+    /// refund path (`refund_ticket` and `batch_refund_tickets`), including
+    /// gift purchases where payer and owner are distinct addresses.
     pub payer: Address,
+    /// Price actually paid for this ticket (in token base units).
+    /// Records the effective price including any early-bird discount.
+    pub price_paid: i128,
 }
 
 impl Ticket {
     /// Create a ticket with the canonical invariant that the human-facing ticket
     /// number matches the monotonic storage id.
-    pub fn new(id: u32, owner: Address, purchase_time: u64) -> Self {
+    pub fn new(id: u32, owner: Address, purchase_time: u64, price_paid: i128) -> Self {
         Self {
             id,
             owner: owner.clone(),
             purchase_time,
             ticket_number: id,
             payer: owner,
+            price_paid,
         }
     }
+}
+
+/// A single drawn winner and their claim state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[contracttype]
+pub struct Winner {
+    /// Address that owns the winning ticket at draw time.
+    pub address: Address,
+    /// True once this tier's prize has been paid to the winner.
+    pub claimed: bool,
+    /// True once this tier's unpaid prize has been swept to the treasury.
+    pub swept: bool,
+    /// Index into `Raffle::prizes` identifying the tier won.
+    pub tier_index: u32,
 }
 
 /// Audit data proving how a draw outcome was derived.
@@ -311,10 +390,14 @@ pub struct FairnessData {
     pub winning_ticket_indices: Vec<u32>,
     /// Unix timestamp when draw resolution occurred.
     pub draw_timestamp: u64,
-    /// Sequence counter for draws/re-draws within the raffle.
+    /// Ledger sequence number of the block in which the draw was finalized.
+    /// Recorded as `env.ledger().sequence()` at finalization so auditors can
+    /// cross-reference the draw with the canonical on-chain ledger.
     pub draw_sequence: u32,
     /// Whether unique-address winner fairness was enabled for this draw (#485).
     pub unique_winners: bool,
+    /// The quorum oracles that contributed and their submitted seeds, if applicable.
+    pub quorum_contributions: Option<Vec<(Address, u64)>>,
 }
 
 /// Generic pagination request for list queries.
@@ -375,10 +458,29 @@ pub enum AdminOp {
     RemoveOracle(Address),
 }
 
+/// Pricing breakdown for a prospective ticket purchase.
+///
+/// Returned by `calculate_buy_quote` and surfaced via `preview_buy`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[contracttype]
+pub struct BuyQuote {
+    /// Gross total before discount
+    pub gross: i128,
+    /// Total early-bird discount applied.
+    pub discount: i128,
+    /// Protocol fee computed on the discounted total.
+    pub fee: i128,
+    /// Amount the buyer actually pays: `gross - discount`.
+    pub net_to_pay: i128,
+    /// Per-ticket price after discount: `net_to_pay / quantity`.
+    pub effective_ticket_price: i128,
+}
+
 // Re-export constants from the single source of truth
 pub use constants::{
-    DEFAULT_CLAIM_LOCKUP_SECONDS, DEFAULT_PAGE_LIMIT, DEFAULT_SWAP_DEADLINE_SECONDS,
-    MAX_PAGE_LIMIT,
+    DEFAULT_CLAIM_EXPIRY_SECONDS, DEFAULT_CLAIM_LOCKUP_SECONDS, DEFAULT_PAGE_LIMIT,
+    DEFAULT_SWAP_DEADLINE_SECONDS, MAX_BATCH_REFUND_PER_CALL, MAX_PAGE_LIMIT,
+    MAX_SWEEP_UNCLAIMED_PER_CALL, MIN_CLAIM_EXPIRY_SECONDS,
 };
 
 /// Returns a safe pagination limit clamped to supported bounds.
@@ -390,6 +492,17 @@ pub fn effective_limit(requested: u32) -> u32 {
     } else {
         requested
     }
+}
+
+/// Returns `true` when `randomness_source` is `Internal` and `prize_amount`
+/// exceeds [`constants::MAX_INTERNAL_RANDOMNESS_PRIZE_AMOUNT`]. Callers map a
+/// `true` result to their own dedicated error variant. (#773)
+pub fn exceeds_internal_randomness_cap(
+    randomness_source: &RandomnessSource,
+    prize_amount: i128,
+) -> bool {
+    *randomness_source == RandomnessSource::Internal
+        && prize_amount > constants::MAX_INTERNAL_RANDOMNESS_PRIZE_AMOUNT
 }
 
 /// Oracle randomness request payload sent to an oracle contract.
@@ -485,18 +598,24 @@ macro_rules! impl_require_not_paused {
     };
 }
 
+/// Unit tests for RaffleConfig defaults and resolution (#734).
 #[cfg(test)]
 mod test {
     use super::*;
     use soroban_sdk::{Env, String, Address, BytesN, Vec};
+    /// Helper to construct a canonical test configuration with explicit documented defaults.
     fn default_config(env: &Env) -> RaffleConfig {
-        let payment_token = Address::from_string(&String::from_str(env, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4"));
+        let payment_token = Address::from_string(&String::from_str(
+            env,
+            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+        ));
         RaffleConfig {
             description: String::from_str(env, "Test"),
             end_time: 0,
             no_deadline: true,
             max_tickets: 10,
             max_tickets_per_tx: 10,
+            // 0 = unlimited per-address ticket purchases in default test setup
             max_tickets_per_address: 0,
             min_tickets: 1,
             allow_multiple: true,
@@ -512,15 +631,32 @@ mod test {
             tikka_token: None,
             metadata_hash: BytesN::from_array(env, &[0; 32]),
             claim_lockup_seconds: None,
+            claim_expiry_seconds: None,
             swap_deadline_seconds: None,
             early_bird_ticket_percentage: 0,
             early_bird_discount_bp: 0,
             category: None,
+            // Default to false so an address can win multiple tiers unless unique winner mode is enabled
             unique_winners: false,
+            // Default to an empty vector; bundle pricing is optional and disabled by default
             bundles: Vec::new(env),
+            // Default to None; prize payout defaults to payment_token when prize_token is not overridden
             prize_token: None,
+            // Default to None; receipt NFT minting is opt-in and disabled by default
             nft_contract: None,
         }
+    }
+
+    #[test]
+    fn test_default_config_has_expected_defaults() {
+        let env = Env::default();
+        let config = default_config(&env);
+
+        assert_eq!(config.unique_winners, false);
+        assert!(config.bundles.is_empty());
+        assert_eq!(config.prize_token, None);
+        assert_eq!(config.nft_contract, None);
+        assert_eq!(config.max_tickets_per_address, 0);
     }
 
     #[test]
@@ -627,8 +763,177 @@ mod effective_limit_tests {
 }
 
 #[cfg(test)]
+mod exceeds_internal_randomness_cap_tests {
+    use super::{
+        constants::MAX_INTERNAL_RANDOMNESS_PRIZE_AMOUNT, exceeds_internal_randomness_cap,
+        RandomnessSource,
+    };
+
+    #[test]
+    fn internal_at_cap_boundary_is_allowed() {
+        assert!(!exceeds_internal_randomness_cap(
+            &RandomnessSource::Internal,
+            MAX_INTERNAL_RANDOMNESS_PRIZE_AMOUNT
+        ));
+    }
+
+    #[test]
+    fn internal_above_cap_is_rejected() {
+        assert!(exceeds_internal_randomness_cap(
+            &RandomnessSource::Internal,
+            MAX_INTERNAL_RANDOMNESS_PRIZE_AMOUNT + 1
+        ));
+    }
+
+    #[test]
+    fn external_above_cap_is_unaffected() {
+        assert!(!exceeds_internal_randomness_cap(
+            &RandomnessSource::External,
+            MAX_INTERNAL_RANDOMNESS_PRIZE_AMOUNT + 1
+        ));
+    }
+}
+
+#[cfg(test)]
 mod raffle_status_tests {
     use super::RaffleStatus;
+
+    /// Exhaustive match over RaffleStatus variants.
+    /// Adding a new variant to RaffleStatus will fail compilation here
+    /// until this match, `RaffleStatus::all()`, and the expected matrices are updated.
+    fn assert_all_variants_handled(status: RaffleStatus) {
+        match status {
+            RaffleStatus::PendingPrize => (),
+            RaffleStatus::Active => (),
+            RaffleStatus::Drawing => (),
+            RaffleStatus::Finalized => (),
+            RaffleStatus::Cancelled => (),
+            RaffleStatus::Failed => (),
+            RaffleStatus::Claimed => (),
+        }
+    }
+
+    /// Hardcoded expected transition matrix for can_transition_to.
+    /// Writing this matrix by hand states the legal transition graph once for review.
+    const EXPECTED_TRANSITIONS: [(RaffleStatus, RaffleStatus, bool); 49] = [
+        // From PendingPrize
+        (RaffleStatus::PendingPrize, RaffleStatus::PendingPrize, false),
+        (RaffleStatus::PendingPrize, RaffleStatus::Active, true),
+        (RaffleStatus::PendingPrize, RaffleStatus::Drawing, false),
+        (RaffleStatus::PendingPrize, RaffleStatus::Finalized, false),
+        (RaffleStatus::PendingPrize, RaffleStatus::Cancelled, false),
+        (RaffleStatus::PendingPrize, RaffleStatus::Failed, false),
+        (RaffleStatus::PendingPrize, RaffleStatus::Claimed, false),
+        // From Active
+        (RaffleStatus::Active, RaffleStatus::PendingPrize, false),
+        (RaffleStatus::Active, RaffleStatus::Active, false),
+        (RaffleStatus::Active, RaffleStatus::Drawing, true),
+        (RaffleStatus::Active, RaffleStatus::Finalized, false),
+        (RaffleStatus::Active, RaffleStatus::Cancelled, true),
+        (RaffleStatus::Active, RaffleStatus::Failed, true),
+        (RaffleStatus::Active, RaffleStatus::Claimed, false),
+        // From Drawing
+        (RaffleStatus::Drawing, RaffleStatus::PendingPrize, false),
+        (RaffleStatus::Drawing, RaffleStatus::Active, false),
+        (RaffleStatus::Drawing, RaffleStatus::Drawing, false),
+        (RaffleStatus::Drawing, RaffleStatus::Finalized, true),
+        (RaffleStatus::Drawing, RaffleStatus::Cancelled, true),
+        (RaffleStatus::Drawing, RaffleStatus::Failed, false),
+        (RaffleStatus::Drawing, RaffleStatus::Claimed, false),
+        // From Finalized
+        (RaffleStatus::Finalized, RaffleStatus::PendingPrize, false),
+        (RaffleStatus::Finalized, RaffleStatus::Active, false),
+        (RaffleStatus::Finalized, RaffleStatus::Drawing, false),
+        (RaffleStatus::Finalized, RaffleStatus::Finalized, false),
+        (RaffleStatus::Finalized, RaffleStatus::Cancelled, false),
+        (RaffleStatus::Finalized, RaffleStatus::Failed, false),
+        (RaffleStatus::Finalized, RaffleStatus::Claimed, true),
+        // From Cancelled (terminal)
+        (RaffleStatus::Cancelled, RaffleStatus::PendingPrize, false),
+        (RaffleStatus::Cancelled, RaffleStatus::Active, false),
+        (RaffleStatus::Cancelled, RaffleStatus::Drawing, false),
+        (RaffleStatus::Cancelled, RaffleStatus::Finalized, false),
+        (RaffleStatus::Cancelled, RaffleStatus::Cancelled, false),
+        (RaffleStatus::Cancelled, RaffleStatus::Failed, false),
+        (RaffleStatus::Cancelled, RaffleStatus::Claimed, false),
+        // From Failed (terminal)
+        (RaffleStatus::Failed, RaffleStatus::PendingPrize, false),
+        (RaffleStatus::Failed, RaffleStatus::Active, false),
+        (RaffleStatus::Failed, RaffleStatus::Drawing, false),
+        (RaffleStatus::Failed, RaffleStatus::Finalized, false),
+        (RaffleStatus::Failed, RaffleStatus::Cancelled, false),
+        (RaffleStatus::Failed, RaffleStatus::Failed, false),
+        (RaffleStatus::Failed, RaffleStatus::Claimed, false),
+        // From Claimed (terminal)
+        (RaffleStatus::Claimed, RaffleStatus::PendingPrize, false),
+        (RaffleStatus::Claimed, RaffleStatus::Active, false),
+        (RaffleStatus::Claimed, RaffleStatus::Drawing, false),
+        (RaffleStatus::Claimed, RaffleStatus::Finalized, false),
+        (RaffleStatus::Claimed, RaffleStatus::Cancelled, false),
+        (RaffleStatus::Claimed, RaffleStatus::Failed, false),
+        (RaffleStatus::Claimed, RaffleStatus::Claimed, false),
+    ];
+
+    /// Hardcoded expected matrix for can_internal_revert_to.
+    /// Internal rollback is only legal from Drawing to Active.
+    const EXPECTED_INTERNAL_REVERTS: [(RaffleStatus, RaffleStatus, bool); 49] = [
+        // From PendingPrize
+        (RaffleStatus::PendingPrize, RaffleStatus::PendingPrize, false),
+        (RaffleStatus::PendingPrize, RaffleStatus::Active, false),
+        (RaffleStatus::PendingPrize, RaffleStatus::Drawing, false),
+        (RaffleStatus::PendingPrize, RaffleStatus::Finalized, false),
+        (RaffleStatus::PendingPrize, RaffleStatus::Cancelled, false),
+        (RaffleStatus::PendingPrize, RaffleStatus::Failed, false),
+        (RaffleStatus::PendingPrize, RaffleStatus::Claimed, false),
+        // From Active
+        (RaffleStatus::Active, RaffleStatus::PendingPrize, false),
+        (RaffleStatus::Active, RaffleStatus::Active, false),
+        (RaffleStatus::Active, RaffleStatus::Drawing, false),
+        (RaffleStatus::Active, RaffleStatus::Finalized, false),
+        (RaffleStatus::Active, RaffleStatus::Cancelled, false),
+        (RaffleStatus::Active, RaffleStatus::Failed, false),
+        (RaffleStatus::Active, RaffleStatus::Claimed, false),
+        // From Drawing (only Drawing -> Active internal revert is allowed)
+        (RaffleStatus::Drawing, RaffleStatus::PendingPrize, false),
+        (RaffleStatus::Drawing, RaffleStatus::Active, true),
+        (RaffleStatus::Drawing, RaffleStatus::Drawing, false),
+        (RaffleStatus::Drawing, RaffleStatus::Finalized, false),
+        (RaffleStatus::Drawing, RaffleStatus::Cancelled, false),
+        (RaffleStatus::Drawing, RaffleStatus::Failed, false),
+        (RaffleStatus::Drawing, RaffleStatus::Claimed, false),
+        // From Finalized
+        (RaffleStatus::Finalized, RaffleStatus::PendingPrize, false),
+        (RaffleStatus::Finalized, RaffleStatus::Active, false),
+        (RaffleStatus::Finalized, RaffleStatus::Drawing, false),
+        (RaffleStatus::Finalized, RaffleStatus::Finalized, false),
+        (RaffleStatus::Finalized, RaffleStatus::Cancelled, false),
+        (RaffleStatus::Finalized, RaffleStatus::Failed, false),
+        (RaffleStatus::Finalized, RaffleStatus::Claimed, false),
+        // From Cancelled
+        (RaffleStatus::Cancelled, RaffleStatus::PendingPrize, false),
+        (RaffleStatus::Cancelled, RaffleStatus::Active, false),
+        (RaffleStatus::Cancelled, RaffleStatus::Drawing, false),
+        (RaffleStatus::Cancelled, RaffleStatus::Finalized, false),
+        (RaffleStatus::Cancelled, RaffleStatus::Cancelled, false),
+        (RaffleStatus::Cancelled, RaffleStatus::Failed, false),
+        (RaffleStatus::Cancelled, RaffleStatus::Claimed, false),
+        // From Failed
+        (RaffleStatus::Failed, RaffleStatus::PendingPrize, false),
+        (RaffleStatus::Failed, RaffleStatus::Active, false),
+        (RaffleStatus::Failed, RaffleStatus::Drawing, false),
+        (RaffleStatus::Failed, RaffleStatus::Finalized, false),
+        (RaffleStatus::Failed, RaffleStatus::Cancelled, false),
+        (RaffleStatus::Failed, RaffleStatus::Failed, false),
+        (RaffleStatus::Failed, RaffleStatus::Claimed, false),
+        // From Claimed
+        (RaffleStatus::Claimed, RaffleStatus::PendingPrize, false),
+        (RaffleStatus::Claimed, RaffleStatus::Active, false),
+        (RaffleStatus::Claimed, RaffleStatus::Drawing, false),
+        (RaffleStatus::Claimed, RaffleStatus::Finalized, false),
+        (RaffleStatus::Claimed, RaffleStatus::Cancelled, false),
+        (RaffleStatus::Claimed, RaffleStatus::Failed, false),
+        (RaffleStatus::Claimed, RaffleStatus::Claimed, false),
+    ];
 
     #[test]
     fn terminal_states_have_no_outgoing_transitions() {
@@ -646,5 +951,99 @@ mod raffle_status_tests {
     fn pending_prize_only_moves_to_active() {
         assert!(RaffleStatus::PendingPrize.can_transition_to(RaffleStatus::Active));
         assert!(!RaffleStatus::PendingPrize.can_transition_to(RaffleStatus::Drawing));
+    }
+
+    #[test]
+    fn exhaustive_transition_matrix_enumerates_every_pair() {
+        let all = RaffleStatus::all();
+
+        // 1. Compile-time & runtime exhaustiveness check for all variants
+        for &status in all {
+            assert_all_variants_handled(status);
+        }
+
+        // 2. Cardinality assertion: total pairs must equal all.len() * all.len()
+        let expected_count = all.len() * all.len();
+        assert_eq!(
+            EXPECTED_TRANSITIONS.len(),
+            expected_count,
+            "EXPECTED_TRANSITIONS must contain exactly all.len() * all.len() pairs; updating variants requires updating the matrix"
+        );
+
+        // 3. Assert every (from, to) pair in the matrix against can_transition_to
+        for &(from, to, expected) in EXPECTED_TRANSITIONS.iter() {
+            assert_eq!(
+                from.can_transition_to(to),
+                expected,
+                "can_transition_to({:?}, {:?}) expected {}, got {}",
+                from,
+                to,
+                expected,
+                from.can_transition_to(to),
+            );
+        }
+
+        // 4. Assert that every (from, to) from the cross product exists exactly once in EXPECTED_TRANSITIONS
+        for &from in all {
+            for &to in all {
+                let occurrences = EXPECTED_TRANSITIONS
+                    .iter()
+                    .filter(|&&(f, t, _)| f == from && t == to)
+                    .count();
+                assert_eq!(
+                    occurrences,
+                    1,
+                    "Expected exactly 1 transition entry for pair ({:?}, {:?}), found {}",
+                    from,
+                    to,
+                    occurrences
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn exhaustive_internal_revert_matrix_enumerates_every_pair() {
+        let all = RaffleStatus::all();
+
+        for &status in all {
+            assert_all_variants_handled(status);
+        }
+
+        let expected_count = all.len() * all.len();
+        assert_eq!(
+            EXPECTED_INTERNAL_REVERTS.len(),
+            expected_count,
+            "EXPECTED_INTERNAL_REVERTS must contain exactly all.len() * all.len() pairs; updating variants requires updating the matrix"
+        );
+
+        for &(from, to, expected) in EXPECTED_INTERNAL_REVERTS.iter() {
+            assert_eq!(
+                from.can_internal_revert_to(to),
+                expected,
+                "can_internal_revert_to({:?}, {:?}) expected {}, got {}",
+                from,
+                to,
+                expected,
+                from.can_internal_revert_to(to),
+            );
+        }
+
+        for &from in all {
+            for &to in all {
+                let occurrences = EXPECTED_INTERNAL_REVERTS
+                    .iter()
+                    .filter(|&&(f, t, _)| f == from && t == to)
+                    .count();
+                assert_eq!(
+                    occurrences,
+                    1,
+                    "Expected exactly 1 internal revert entry for pair ({:?}, {:?}), found {}",
+                    from,
+                    to,
+                    occurrences
+                );
+            }
+        }
     }
 }

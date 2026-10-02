@@ -1,5 +1,6 @@
 import { LedgerCheckpointStore } from '../listener/ledger-checkpoint';
 import { RequestQueue, RandomnessJob } from '../queue/request-queue';
+import { logger } from '../logging/logger';
 
 export interface ShutdownOptions {
   /**
@@ -55,8 +56,15 @@ export class GracefulShutdown {
   private readonly setTimeoutFn: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
   private readonly clearTimeoutFn: (handle: ReturnType<typeof setTimeout>) => void;
 
-  /** Resolves when stopListening has been called on the listener. */
+  /** Called first on shutdown to stop the event-listener poll loop. */
   private stopListening?: () => void;
+
+  /**
+   * Hooks run after the drain and checkpoint-persist but before exitFn.
+   * Registered via registerShutdownHook(); called in registration order.
+   * Typical use: zeroize key material after all signing work is done.
+   */
+  private readonly shutdownHooks: Array<() => void> = [];
 
   /** True once a signal has been received — prevents double-handling. */
   private shutdownInitiated = false;
@@ -83,12 +91,27 @@ export class GracefulShutdown {
     this.stopListening = stopListeningFn;
 
     const handler = (signal: string) => {
-      console.log(`Received ${signal} — starting graceful shutdown.`);
+      logger.info(`Received ${signal} — starting graceful shutdown.`);
       void this.shutdown();
     };
 
     process.once('SIGTERM', () => handler('SIGTERM'));
     process.once('SIGINT', () => handler('SIGINT'));
+  }
+
+  /**
+   * Register a hook that is invoked after the queue has been drained and the
+   * ledger checkpoint has been persisted, but **before** the process exits.
+   *
+   * Hooks are called synchronously in registration order.  Use this for
+   * teardown that must happen after all signing/submission work is complete —
+   * for example, zeroizing key material from memory.
+   *
+   * @param fn  Teardown callback.  Must not throw; any error is logged and
+   *            swallowed so that subsequent hooks still run.
+   */
+  registerShutdownHook(fn: () => void): void {
+    this.shutdownHooks.push(fn);
   }
 
   /**
@@ -110,7 +133,7 @@ export class GracefulShutdown {
     let timedOut = false;
     const forceExitTimer = this.setTimeoutFn(() => {
       timedOut = true;
-      console.error(
+      logger.error(
         `Graceful shutdown drain exceeded ${this.drainTimeoutMs} ms — forcing exit 1.`,
       );
       this.exitFn(1);
@@ -124,7 +147,7 @@ export class GracefulShutdown {
     try {
       await this.drainQueue();
     } catch (err) {
-      console.error('Error during drain:', err);
+      logger.error('Error during drain:', err);
     }
 
     if (!timedOut) {
@@ -136,15 +159,25 @@ export class GracefulShutdown {
       const lastCheckpoint = await this.checkpointStore.load();
       if (lastCheckpoint !== undefined) {
         await this.checkpointStore.save(lastCheckpoint);
-        console.log(`Checkpoint persisted at ledger ${lastCheckpoint}.`);
+        logger.info(`Checkpoint persisted at ledger ${lastCheckpoint}.`);
       }
     } catch (err) {
-      console.error('Failed to persist checkpoint on shutdown:', err);
+      logger.error('Failed to persist checkpoint on shutdown:', err);
     }
 
-    // 4. Exit 0 — clean shutdown.
+    // 4. Run registered shutdown hooks (e.g. zeroize key material) after all
+    //    signing work is complete but before the process exits.
+    for (const hook of this.shutdownHooks) {
+      try {
+        hook();
+      } catch (err) {
+        logger.error('Error in shutdown hook:', err);
+      }
+    }
+
+    // 5. Exit 0 — clean shutdown.
     if (!timedOut) {
-      console.log('Graceful shutdown complete. Exiting 0.');
+      logger.info('Graceful shutdown complete. Exiting 0.');
       this.exitFn(0);
     }
   }
@@ -160,22 +193,22 @@ export class GracefulShutdown {
     if (jobs.length === 0) {
       return;
     }
-    console.log(`Draining ${jobs.length} in-flight job(s) before shutdown.`);
+    logger.info(`Draining ${jobs.length} in-flight job(s) before shutdown.`);
 
     for (const job of jobs) {
       try {
         const processed = await this.processJob(job);
         if (processed) {
-          console.log(
+          logger.info(
             `Job drained: raffle=${job.raffleContract} requestId=${job.requestId}`,
           );
         } else {
-          console.log(
+          logger.info(
             `Job skipped (deduped): raffle=${job.raffleContract} requestId=${job.requestId}`,
           );
         }
       } catch (err) {
-        console.error(
+        logger.error(
           `Failed to drain job raffle=${job.raffleContract} requestId=${job.requestId}:`,
           err,
         );
