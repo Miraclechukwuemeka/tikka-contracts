@@ -6,7 +6,7 @@ This document defines key terms used throughout Tikka contracts, documentation, 
 
 ### RaffleStatus
 
-The lifecycle state of a raffle instance. Transitions are enforced by contract logic and represent the canonical on-chain lifecycle used by indexers and clients. Possible states are: `PendingPrize` (prize not yet deposited), `Active` (ticket sales open), `Drawing` (randomness pending), `Finalized` (winners selected), `Cancelled`, `Failed`, or `Claimed` (all winners have collected).
+The lifecycle state of a raffle instance. Transitions are enforced by contract logic and represent the canonical on-chain lifecycle used by indexers and clients. Possible states are: `PendingPrize` (prize not yet deposited), `Active` (ticket sales open), `Drawing` (randomness pending), `Finalized` (winners selected and claims or sweeps may still be pending), `Cancelled`, `Failed`, or `Claimed` (all winners have collected their prizes).
 
 **Canonical transition graph** (defined in code via `RaffleStatus::can_transition_to`):
 
@@ -19,7 +19,7 @@ stateDiagram-v2
     Active --> Cancelled: cancel_raffle()
     Drawing --> Finalized: randomness delivered / internal finalize
     Drawing --> Cancelled: oracle timeout refund
-    Finalized --> Claimed: all prizes claimed or swept
+    Finalized --> Claimed: all prizes claimed by winners
     Cancelled --> [*]
     Failed --> [*]
     Claimed --> [*]
@@ -37,17 +37,41 @@ A single instance of a prize draw created and managed by a raffle creator. A raf
 
 **Code reference**: [`contracts/raffle-instance/src/lib.rs`](../contracts/raffle-instance/src/lib.rs) — `struct Raffle` (via `RaffleConfig`)
 
+### End Time
+
+The Unix timestamp (`Raffle::end_time` / `RaffleConfig::end_time`) after which ticket sales for a raffle close. **The boundary is exclusive of `end_time` itself**: sales are open only while `ledger_timestamp < end_time`, so the instant `ledger_timestamp == end_time` is already past the deadline. This single rule governs three otherwise-independent code paths, which must always agree:
+
+- **Ticket purchases** (`buy_tickets`, `buy_tickets_for`): reject with `Error::RaffleExpired` once `ledger_timestamp >= end_time` (unless `no_deadline` is `true`).
+- **Finalization** (`finalize_raffle`): treats the deadline as reached (`time_ended`) once `ledger_timestamp >= end_time`; together with `tickets_full`, this is what allows an `Active` raffle to leave that state.
+- **Stats** (`get_stats().time_remaining`): returns `end_time - ledger_timestamp` while `ledger_timestamp < end_time`, and `0` from `ledger_timestamp == end_time` onward. `0` is also returned whenever `no_deadline` is `true`.
+
+When `no_deadline` is `true`, `end_time` is not enforced by any of the above; `RaffleConfig::end_time` must be `0` in that case (checked at `init`).
+
+**Code reference**: [`contracts/raffle-instance/src/lib.rs`](../contracts/raffle-instance/src/lib.rs) — `struct Raffle` (`end_time`, `no_deadline`); [`contracts/raffle-instance/src/tickets.rs`](../contracts/raffle-instance/src/tickets.rs) — `buy_tickets`, `buy_tickets_for`; [`contracts/raffle-instance/src/draw.rs`](../contracts/raffle-instance/src/draw.rs) — `finalize_raffle`; [`contracts/raffle-instance/src/views.rs`](../contracts/raffle-instance/src/views.rs) — `get_stats`
+
 ### Ticket
 
 A single entry in a raffle draw owned by a participant. Each ticket represents one chance to win. A ticket is identified by a monotonic `id` unique to the raffle, recorded with the owner's address and purchase timestamp. See [`docs/EVENTS.md`](EVENTS.md) for the `TicketPurchased` event structure.
 
-**Code reference**: [`contracts/raffle-shared/src/lib.rs`](../contracts/raffle-shared/src/lib.rs) — `struct Ticket`
+A ticket records two distinct addresses: the `owner`, who is entered in the draw, and the `payer`, who paid for it. They are the same address for a self-purchase and differ for a gift purchase made with `buy_tickets_for`.
+
+**Refunds follow the payer, never the owner.** Every refund path — `refund_ticket` and `batch_refund_tickets` — credits `Ticket::payer` with `Ticket::price_paid`, so a refund always returns funds to the party that was out of pocket. For a gift purchase the owner receives nothing, and for a self-purchase payer and owner coincide. `refund_ticket` requires authorization from the payer; `batch_refund_tickets` may be called by either the payer or the owner of the ticket, but the funds are always sent to the payer.
+
+**Code reference**: [`contracts/raffle-shared/src/lib.rs`](../contracts/raffle-shared/src/lib.rs) — `struct Ticket`; [`contracts/raffle-instance/src/claim.rs`](../contracts/raffle-instance/src/claim.rs) — `refund_ticket`, `batch_refund_tickets`
 
 ### Prize
 
 The amount (denominated in a Stellar asset) awarded to the winner(s) of a raffle. The creator escrows the prize in the contract at raffle creation. Winners claim their share after the raffle is finalized and the claim lockup period expires.
 
 **Code reference**: [`contracts/raffle-instance/src/lib.rs`](../contracts/raffle-instance/src/lib.rs) — `deposit_prize()` entry point
+
+### Claimed and Swept Prizes
+
+A **claimed** prize is transferred to its winner through `claim_prize`. A
+**swept** prize was not claimed before expiry and is instead transferred to the
+treasury through `sweep_unclaimed`. Winner records expose these as separate
+states; `get_stats` reports `claimed_prizes` and `swept_prizes` independently.
+A swept winner cannot claim the prize and receives `Error::PrizeSwept`.
 
 ## Randomness & Drawing
 

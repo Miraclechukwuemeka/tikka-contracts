@@ -6,6 +6,8 @@ mod admin;
 mod invariants;
 #[path = "tests/tickets.rs"]
 mod tickets;
+#[path = "tests/quorum.rs"]
+mod quorum;
 
 use super::*;
 use ed25519_dalek::{Signer, SigningKey};

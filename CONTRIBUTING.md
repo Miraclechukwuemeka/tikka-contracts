@@ -8,6 +8,7 @@ Thanks for your interest in contributing to Tikka! This project targets Stellar/
 2. Make your changes with clear, focused commits.
 3. Run `cargo fmt --all` to format code before committing.
 4. Run tests locally before opening a PR.
+5. Run `make ci` before pushing to verify the full CI suite passes locally.
 5. Install the recommended VS Code extensions when prompted and keep format-on-save enabled.
 6. Install the local hooks with `pip install pre-commit && pre-commit install`.
 
@@ -64,13 +65,116 @@ cargo test -p raffle-instance
 
 ## Error Documentation Sync
 
-If you modify or add any variants to the `Error` enum in `contracts/raffle-instance/src/lib.rs`, regenerate `docs/ERRORS.md` before committing:
+If you modify or add any variants to the `Error` enum in `contracts/raffle-instance/src/lib.rs`
+or the `ContractError` enum in `contracts/raffle-factory/src/lib.rs`, regenerate
+`docs/ERRORS.md` before committing:
 
 ```bash
-python scripts/generate_error_docs.py
+python3 scripts/generate_error_docs.py
 ```
 
-CI will fail if `docs/ERRORS.md` is out of sync with the Rust `Error` enum.
+CI will fail if `docs/ERRORS.md` is out of sync with either enum. Every variant must
+have a `///` doc comment; duplicate discriminants and undeclared-but-used variants
+also fail the generator.
+
+## Continuous Integration
+
+Run the full CI suite locally before pushing:
+
+```bash
+make ci
+```
+
+This single target mirrors `.github/workflows/ci.yml` exactly — orphan check,
+formatting, contract build, WASM size gate, docs sync, clippy, tests, doc-tests,
+shellcheck, and the complete oracle pipeline (format, lint, typecheck, tests).
+If `make ci` is green, CI will be green.
+
+All CI jobs must pass before a pull request can merge. A red build blocks merge —
+there are no exceptions for individual jobs. Required checks on `master` are:
+
+- `Build, Test, and Lint` (includes `cargo check`, formatting, clippy, and tests)
+- `Oracle Service CI`
+- `Shell Script Checks`
+
+To reproduce the full CI check list locally before pushing, run:
+
+```bash
+make ci
+```
+
+This runs the exact same steps as the `build_and_test` and `oracle_check` CI jobs
+(orphan check, cargo check, fmt, clippy, build, WASM sizes, error/event docs sync,
+Rust tests, oracle lint/typecheck/tests). It does not include the fuzz-targets
+compile check or the coverage ratchet, which run on their own schedules.
+
+Repository admins must enable branch protection on `master` so these checks are
+required and branches must be up to date before merging. Workflow changes land in
+PRs first; enforcement is enabled once the pipeline is green.
+
+> **Keeping Make and CI in sync**: every CI step calls the corresponding `make`
+> target. Adding a check to CI therefore requires a matching Makefile target, and
+> vice versa — the two files are the single source of truth for what `make ci`
+> runs.
+
+## Events Documentation Sync
+
+If you modify or add any `#[contractevent]` struct in
+`contracts/raffle-shared/src/events.rs`, `contracts/raffle-factory/src/events.rs`,
+or `contracts/raffle-instance/src/events.rs`, regenerate `docs/EVENTS.md` before
+committing:
+
+```bash
+python scripts/generate_event_docs.py
+```
+
+Every event struct **and** every field must carry a `///` doc comment, and
+numeric fields must state whether they are 0-based **indices** or 1-based
+**IDs** (see the "Index-vs-ID convention" section of `docs/EVENTS.md`).
+
+CI will fail if `docs/EVENTS.md` is out of sync with the event structs.
+
+## Code Coverage
+
+Coverage is collected in CI for both the Rust workspace (`cargo llvm-cov`) and
+the oracle service (Jest with `--coverage`):
+
+- Rust and oracle `lcov` artifacts are uploaded as build artifacts.
+- Rust line coverage is enforced via a **ratchet**:
+  `scripts/check_coverage_ratchet.py` compares the current `lcov` output with
+  the committed baseline in `coverage/coverage-ratchet.json`. Coverage must
+  never **decrease** relative to that baseline; increases are automatically
+  adopted.
+
+To arm an updated ratchet after a big behavior change, regenerate the baseline
+and commit it in the same PR:
+
+```bash
+python scripts/check_coverage_ratchet.py \
+  --lcov coverage/lcov.info \
+  --baseline coverage/coverage-ratchet.json \
+  --update-baseline
+```
+
+## WASM Size Baselines
+
+CI enforces two gates on every contract artifact (`scripts/check_wasm_sizes.py`):
+the 128 KB hard ceiling and a ±2048-byte delta against the committed baseline
+in `baselines/wasm_sizes.json`. A `baseline_bytes` of 0 is treated as an
+unpopulated baseline and fails the build — the delta gate must always have a
+real number to compare against.
+
+If your PR changes compiled WASM size (new entrypoints, storage, dependencies),
+refresh the baseline **in the same commit** so the delta stays reviewable:
+
+```bash
+stellar contract build
+python3 scripts/check_wasm_sizes.py --update-baseline
+git diff baselines/wasm_sizes.json  # review the delta, then commit it
+```
+
+The artifact directory is derived from `WASM_TARGET` in `scripts/common.sh`
+(single source of truth); never hardcode a `target/...` path into the JSON.
 
 ## Markdown
 
@@ -81,6 +185,25 @@ npx markdownlint-cli2 "**/*.md"
 ```
 
 The configuration lives in `.markdownlint.jsonc`. Auto-fixable issues can be resolved with `npx markdownlint-cli2 --fix "**/*.md"`.
+
+## Error Code Policy
+
+Error codes are defined in `#[contracterror]` enums and are part of the on-chain ABI.
+Once a code is assigned it is **never reused or reassigned**, even if the variant is
+later deprecated.  New errors must follow the reserved ranges:
+
+| Range     | Owner            | Purpose                                      |
+| --------- | ---------------- | -------------------------------------------- |
+| 1 – 99    | Shared           | Conditions used by both instance and factory  |
+| 100 – 199 | Instance-only    | New instance-specific errors                 |
+| 200 – 299 | Factory-only     | New factory-specific errors                  |
+
+If a new shared condition is needed, add it to `ProtocolError` in
+`contracts/raffle-shared/src/errors.rs` with a code in the 1–99 range, then update
+both `raffle-instance/src/lib.rs` and `raffle-factory/src/lib.rs` to use it.
+
+Run `python scripts/check_error_codes.py` before submitting a PR to verify no
+duplicate discriminants exist.
 
 ## Pull Requests
 
