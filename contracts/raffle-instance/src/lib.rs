@@ -55,7 +55,21 @@ use raffle_shared::{
     RaffleConfig, RaffleStats, RaffleStatus, RandomnessSource, RandomnessType, Ticket,
 };
 
-use crate::events::RaffleCreated;
+use self::randomness::{
+    build_vrf_proof_message, OracleSeedWinnerSelection, WinnerSelectionStrategy,
+};
+
+use crate::events::{
+    CancelScheduled, ContractPaused, ContractUnpaused, DrawTriggered, EmergencyWithdrawn,
+    FeesWithdrawn, MetadataHashUpdated, OracleAddressUpdated, OracleSeedDelivered, PrizeClaimed,
+    PrizeDeposited, PrizeRefunded, ProtocolFeeUpdated, RaffleCancelled, RaffleCreated,
+    RaffleFailed, RaffleFinalized, RaffleStatusChanged, RandomnessFallbackTriggered,
+    RandomnessReceived, RandomnessRequested, StorageWiped, SwapDeadlineUpdated, TicketNftMinted,
+    TicketPurchased, TicketRefunded, TicketSalesPaused, TicketSalesResumed, TokensRescued,
+    WinnerDrawn,
+};
+
+const RANDOMNESS_MIN_DELAY_LEDGERS: u32 = 10;
 
 #[contract]
 pub struct RaffleInstance;
@@ -282,7 +296,7 @@ pub enum Error {
     InvalidEndTime = 62,
     InvalidAdminAddress = 63,
     RandomnessTooEarly = 64,
-    CancelTimelockActive = 65,
+    CancelTimelockActive = 67,
     CancelNotScheduled = 66,
     ExceedsMaxTicketsPerAddress = 67,
     OracleNotRegistered = 68,
@@ -734,12 +748,12 @@ if config.randomness_source == RandomnessSource::External {
         // Track submission order.
         let mut submitted: Vec<Address> = env
             .storage()
-            .persistent()
+            .instance()
             .get(&DataKey::QuorumSubmittedOracles)
             .unwrap_or_else(|| Vec::new(&env));
         submitted.push_back(caller.clone());
         env.storage()
-            .persistent()
+            .instance()
             .set(&DataKey::QuorumSubmittedOracles, &submitted);
 
         let count = submitted.len() as u32;

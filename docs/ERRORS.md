@@ -76,7 +76,6 @@ Sources of truth:
 | 70   | `CommitAlreadySubmitted`      | A commit has already been submitted for this draw                 | "This oracle has already committed for this draw"        |
 | 71   | `OraclePublicKeyMismatch`     | The submitted oracle public key does not match the registered key | "Submitted oracle key does not match the registered key" |
 | 72   | `PrizeSwept`                  | Prize was swept to the treasury after the claim period expired    | "This prize was swept to the treasury"                   |
-
 ---
 
 ## Factory Contract Errors
@@ -104,7 +103,6 @@ Sources of truth:
 | 24   | `CreationPaused`                  | Raffle creation is paused                              | "Raffle creation is paused"                    |
 | 25   | `CallerNotRegisteredRaffle`       | Caller is not a raffle registered by this factory      | "Caller is not a registered raffle"            |
 | 26   | `RandomnessSourceTooWeakForPrize` | Randomness source is too weak for the configured prize | "Randomness source is too weak for this prize" |
-
 ---
 
 ## Error Code Mapping (TypeScript)
