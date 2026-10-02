@@ -28,6 +28,9 @@ The oracle requires a secure keypair to sign reveal transactions. The `KeyServic
 | `ALERT_QUEUE_DEPTH_LIMIT`    | No                | Queue depth that triggers a warning (default: `10`)     |
 | `ALERT_QUEUE_AGE_LIMIT_MS`   | No                | Max age of the oldest queued request (default: `300000`) |
 | `ALERT_RPC_UNREACHABLE_THRESHOLD` | No           | Consecutive RPC poll failures before alerting (default: `3`) |
+| `ORACLE_RETRY_BASE_MS`            | No           | Retry backoff base in milliseconds (default: `500`) |
+| `ORACLE_RETRY_MAX_MS`             | No           | Maximum retry backoff in milliseconds (default: `30000`) |
+| `ORACLE_RETRY_MAX_ATTEMPTS`       | No           | Maximum submission attempts (default: `5`) |
 
 ### Local Development (Environment Variables)
 
@@ -122,3 +125,23 @@ npm test
 ```
 
 Set `STELLAR_INTEGRATION_TEST=1` with funded testnet credentials to run the transaction submission integration test.
+
+## Scripts
+
+| Script | Purpose |
+| --- | --- |
+| `npm run build` | Compile TypeScript to `dist/` using `tsc -p tsconfig.json`. |
+| `npm start` | Run the built service from `dist/index.js`. |
+| `npm run dev` | Watch TypeScript sources and rebuild on change. Pair with `npm start` in a second terminal if you want a running process while iterating. |
+| `npm test` | Run the Jest suite once. |
+| `npm run test:watch` | Run Jest in watch mode for focused local iteration. |
+| `npm run test:coverage` | Run Jest with coverage enabled. |
+| `npm run test:ci` | CI-friendly coverage run with `--runInBand`. |
+| `npm run lint` | Run ESLint with zero warnings allowed. |
+| `npm run typecheck` | Run `tsc --noEmit` for a fast type-only check. |
+| `npm run format` | Rewrite source and markdown files with Prettier. |
+| `npm run format:check` | Check formatting without changing files. |
+
+### Build output
+
+The TypeScript compiler is configured with `rootDir: "./src"` and `outDir: "./dist"`, so the entrypoint emitted by `npm run build` is `dist/index.js`. Both `main` and `npm start` point there.
